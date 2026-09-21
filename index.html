@@ -548,6 +548,7 @@
   .tp-margin b{ font-size:16px; color:var(--in) }
   .tp-margin small{ color:var(--ink-soft); margin-left:6px }
   .dual-col[hidden]{ display:none }
+  .dual[hidden], .bar-wrap[hidden]{ display:none }
   details.formulas{ margin-top:16px; border:1px solid var(--line); border-radius:11px; background:var(--paper); overflow:hidden }
   details.formulas summary{ cursor:pointer; padding:12px 16px; font-size:13.5px; font-weight:500; color:var(--ink); list-style:none; user-select:none }
   details.formulas summary::-webkit-details-marker{ display:none }
@@ -565,6 +566,8 @@
   #tbl td.yr:hover{ background:var(--in-tint) }
   #tbl td.yr.anul{ color:var(--ink-soft); text-decoration:line-through; text-decoration-color:var(--out); opacity:.65 }
   .tblnote{ font-size:11.5px; color:var(--ink-soft); margin:8px 0 0 }
+  .ghost-btn{ background:var(--paper) !important; color:var(--ink) !important; border:1px solid var(--line-strong) !important }
+  .ghost-btn:hover{ border-color:var(--in) !important }
 
   footer{max-width:1080px; margin:0 auto; padding:0 clamp(18px,5vw,56px) 40px; color:var(--ink-soft); font-size:12.5px}  footer span{color:var(--in)}
 </style>
@@ -668,7 +671,7 @@
 
         <div class="adj-result" id="adjResult" hidden>
           <div class="tp-margin">Margen de la empresa analizada: <b class="num" id="tpMargin">—</b> <small id="tpMarginNote">calculado de sus resultados</small></div>
-          <div class="dual">
+          <div class="dual" id="dualWrap">
             <div class="dual-col" id="dualUn">
               <div class="dual-k">Rango sin ajustar <span class="pill" id="pillUn" hidden>vinculante</span></div>
               <div class="dual-v"><span class="num" id="uQ1">—</span> <span class="sep">·</span> <span class="num strong" id="uMed">—</span> <span class="sep">·</span> <span class="num" id="uQ3">—</span></div>
@@ -678,7 +681,7 @@
               <div class="dual-v"><span class="num" id="aQ1">—</span> <span class="sep">·</span> <span class="num strong" id="aMed">—</span> <span class="sep">·</span> <span class="num" id="aQ3">—</span></div>
             </div>
           </div>
-          <div class="bar-wrap" style="margin:14px 0 0">
+          <div class="bar-wrap" id="barWrapA" style="margin:14px 0 0">
             <div class="bar" id="barA">
               <div class="bar-axis"></div><div class="bar-whisker" id="whiskA"></div>
               <div class="bar-cap" id="capMinA"></div><div class="bar-cap" id="capMaxA"></div>
@@ -722,6 +725,7 @@
           <div><label for="pliSel">Indicador (PLI)</label><select id="pliSel"></select></div>
           <div><label>Años del promedio</label><div class="yrs" id="yrs"></div></div>
           <button class="btn" id="dl">Descargar Excel</button>
+          <button class="btn ghost-btn" id="dlPng">Descargar gráfico (PNG)</button>
           <button class="reset" id="reset">Cargar otro archivo</button>
         </div>
       </div>
@@ -829,14 +833,14 @@ function computeAdjusted(){
   });
   return {years, comps, ...rangoDe(comps.map(c=>c.avg))};
 }
-// PLI de la tested party (promedio de los años cargados) y su año más reciente
+// PLI de la tested party: SIEMPRE el último año (más reciente) con resultados cargados
 function tpPLIyBase(){
-  const years=DS.plis[PLI].slice(0,NY);
-  const ratios=[];
-  years.forEach(y=>{ const t=ADJ.tp[y]||{}; const r=calcularRatioPli(PLI,t.V,t.C,t.S,t.TA,t.INT); if(!isNaN(r)) ratios.push(r); });
-  const pli = ratios.length? ratios.reduce((a,b)=>a+b,0)/ratios.length : NaN;
-  const yb = years[0]; const tb=ADJ.tp[yb]||{}; // año más reciente para base imponible
-  return {pli, base:{V:tb.V,C:tb.C,S:tb.S,TA:tb.TA,INT:tb.INT}};
+  const years=DS.plis[PLI].slice(0,NY); // orden descendente: [2025,2024,...]
+  let pli=NaN, yb=null;
+  for(const y of years){ const t=ADJ.tp[y]||{}; const r=calcularRatioPli(PLI,t.V,t.C,t.S,t.TA,t.INT);
+    if(!isNaN(r)){ pli=r; yb=y; break; } }
+  const tb=(yb!=null)?(ADJ.tp[yb]||{}):{};
+  return {pli, year:yb, base:{V:tb.V,C:tb.C,S:tb.S,TA:tb.TA,INT:tb.INT}};
 }
 
 /* ---------- parseo del workbook ---------- */
@@ -883,10 +887,11 @@ function normalizeFromWorkbook(wb){
           analisisRows:(wb.Sheets["Analisis"]?XLSX.utils.sheet_to_json(wb.Sheets["Analisis"],{defval:null}):null)};
 }
 function normalizeSample(s){
+  const plis={}; for(const p in s.plis){ plis[p]=[...s.plis[p]].map(String).sort((a,b)=>b-a); }
   const rows=s.rows.map(r=>{ const vals={}; for(const p in r.vals){ vals[p]={}; for(const y in r.vals[p]){ vals[p][y]=(r.vals[p][y]===null?NaN:r.vals[p][y]); } }
     let fin=null; if(r.fin){ fin={}; for(const y in r.fin){ fin[y]={}; for(const k in r.fin[y]){ fin[y][k]=(r.fin[y][k]===null?NaN:r.fin[y][k]); } } }
     return {...r,vals,fin}; });
-  return {plis:s.plis, rows, hasFin:rows.some(r=>r.fin), tpDefault:s.tpDefault||null, tasasDefault:s.tasasDefault||null,
+  return {plis, rows, hasFin:rows.some(r=>r.fin), tpDefault:s.tpDefault||null, tasasDefault:s.tasasDefault||null,
           mrRows:s.mr||null, analisisRows:s.analisis||null};
 }
 
@@ -1008,33 +1013,48 @@ function drawAdjBar(R, tpVal){
   else { let p=Math.max(-3,Math.min(103,pos(tpVal))); ndl.style.left=p+'%'; ndl.dataset.label=pct(tpVal);
     ndl.className='bar-needle show '+(tpVal>=R.q1?'in':''); }
 }
+function drawMainNeedle(tpPli, R){
+  const ndl=document.getElementById('needle');
+  if(isNaN(tpPli) || !R){ ndl.className='bar-needle'; return; }
+  const span=(R.max-R.min)||1; let p=((tpPli-R.min)/span)*100; p=Math.max(-3,Math.min(103,p));
+  ndl.style.left=p+'%'; ndl.dataset.label=pct(tpPli); ndl.className='bar-needle show '+(tpPli>=R.q1?'in':'out');
+}
 function runTested(){
   readTpGrid();
   const on=ADJ.on;
   const Runadj=compute();
   let Radj=null;
   if(on && DS.hasFin){ Radj=computeAdjusted(); if(!Radj.n) Radj=null; }
-  const binding=(on && Radj)?Radj:Runadj;
-  const {pli:tpPli, base}=tpPLIyBase();
+  const showAdj=(on && !!Radj);
+  const binding=showAdj?Radj:Runadj;
+  const {pli:tpPli, year:tpYear, base}=tpPLIyBase();
 
-  // si no hay resultados de la tested y no hay ajuste que mostrar, ocultar
-  if(isNaN(tpPli) && !(on && Radj)){ document.getElementById('adjResult').hidden=true; return; }
+  // aguja de la tested en la barra principal (rango sin ajustar) — siempre
+  drawMainNeedle(tpPli, Runadj);
+
+  if(isNaN(tpPli) && !showAdj){ document.getElementById('adjResult').hidden=true; return; }
   document.getElementById('adjResult').hidden=false;
-
   document.getElementById('tpMargin').textContent = isNaN(tpPli)?'—':pct(tpPli);
-  document.getElementById('uQ1').textContent=pct(Runadj.q1); document.getElementById('uMed').textContent=pct(Runadj.med); document.getElementById('uQ3').textContent=pct(Runadj.q3);
-  const dualAdj=document.getElementById('dualAdj'), dualUn=document.getElementById('dualUn'), pillUn=document.getElementById('pillUn');
-  if(on && Radj){
-    dualAdj.hidden=false; dualUn.classList.remove('binding'); pillUn.hidden=true;
-    document.getElementById('aQ1').textContent=pct(Radj.q1); document.getElementById('aMed').textContent=pct(Radj.med); document.getElementById('aQ3').textContent=pct(Radj.q3);
-  } else { dualAdj.hidden=true; dualUn.classList.add('binding'); pillUn.hidden=false; }
+  document.getElementById('tpMarginNote').textContent = tpYear?`calculado del último año (${tpYear})`:'cargá los resultados del último año';
 
-  drawAdjBar(binding, tpPli);
+  const dualWrap=document.getElementById('dualWrap');
+  const barWrapA=document.getElementById('barWrapA');
+  if(showAdj){
+    // con ajuste: mostrar dual (sin ajustar vs ajustado) + barra ajustada (info nueva)
+    dualWrap.hidden=false; barWrapA.hidden=false;
+    document.getElementById('dualAdj').hidden=false; document.getElementById('dualUn').classList.remove('binding'); document.getElementById('pillUn').hidden=true;
+    document.getElementById('uQ1').textContent=pct(Runadj.q1); document.getElementById('uMed').textContent=pct(Runadj.med); document.getElementById('uQ3').textContent=pct(Runadj.q3);
+    document.getElementById('aQ1').textContent=pct(Radj.q1); document.getElementById('aMed').textContent=pct(Radj.med); document.getElementById('aQ3').textContent=pct(Radj.q3);
+    drawAdjBar(Radj, tpPli);
+  } else {
+    // sin ajuste: el rango ya está arriba (tarjetas + barra con la aguja). No repetir.
+    dualWrap.hidden=true; barWrapA.hidden=true;
+  }
 
   const vA=document.getElementById('verdictA'), vtA=document.getElementById('verdictTxtA');
   if(isNaN(tpPli)){ vA.className='verdict'; vtA.innerHTML=''; }
   else{
-    const etq=(on&&Radj)?'ajustado':'de comparables';
+    const etq=showAdj?'ajustado':'de comparables';
     let cls,txt;
     if(tpPli<binding.q1){ cls='out'; txt=(tpPli<binding.min?'Por debajo del mínimo':'Por debajo del rango '+etq); }
     else if(tpPli>binding.q3){ cls='in'; txt='Por encima del rango '+etq; }
@@ -1047,7 +1067,7 @@ function runTested(){
     bi.hidden=false; renderBI(binding.med, base);
   } else { bi.hidden=true; }
 
-  ADJ._lastR=binding; ADJ._lastUn=Runadj; ADJ._lastAdj=Radj; ADJ._base=base; ADJ._tpPli=tpPli; ADJ._on=(on&&!!Radj);
+  ADJ._lastR=binding; ADJ._lastUn=Runadj; ADJ._lastAdj=Radj; ADJ._base=base; ADJ._tpPli=tpPli; ADJ._on=showAdj;
 }
 function renderBI(mediana, base){
   const ao=(!isNaN(base.TA)&&!isNaN(base.INT))?base.TA-base.INT:NaN;
@@ -1058,39 +1078,104 @@ function renderBI(mediana, base){
   el('biAjuste', money(aj)); el('biImp', money(aj*ADJ.alic));
 }
 
+function drawBoxPlotPNG(R, tpPli, opts){
+  const W=1120, H=470, scale=2;
+  const cv=document.createElement('canvas'); cv.width=W*scale; cv.height=H*scale;
+  const ctx=cv.getContext('2d'); ctx.scale(scale,scale);
+  ctx.fillStyle="#ffffff"; ctx.fillRect(0,0,W,H);
+  const ink="#1A1D1A", soft="#6b7280", green="#0E7C5A", greenF="rgba(14,124,90,0.12)", clay="#B45309";
+  const pctS=v=>(v*100).toFixed(2).replace('.',',')+'%';
+  ctx.textBaseline="alphabetic"; ctx.textAlign="left";
+  ctx.fillStyle=ink; ctx.font="bold 27px Inter,Arial,sans-serif"; ctx.fillText(opts.title,48,58);
+  ctx.fillStyle=soft; ctx.font="15px Inter,Arial,sans-serif"; ctx.fillText(opts.sub,48,84);
+  const padL=90, padR=W-90, midY=255;
+  const lo=Math.min(R.min, isNaN(tpPli)?R.min:tpPli), hi=Math.max(R.max, isNaN(tpPli)?R.max:tpPli);
+  const span=(hi-lo)||1, pad=span*0.08;
+  const x=v=>padL+((v-(lo-pad))/((hi+pad)-(lo-pad)))*(padR-padL);
+  ctx.strokeStyle=ink; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(x(R.min),midY); ctx.lineTo(x(R.max),midY); ctx.stroke();
+  [R.min,R.max].forEach(v=>{ ctx.beginPath(); ctx.moveTo(x(v),midY-15); ctx.lineTo(x(v),midY+15); ctx.stroke(); });
+  const boxT=midY-48, boxB=midY+48, x1=x(R.q1), x3=x(R.q3);
+  ctx.fillStyle=greenF; ctx.fillRect(x1,boxT,x3-x1,boxB-boxT);
+  ctx.strokeStyle=green; ctx.lineWidth=2.5; ctx.strokeRect(x1,boxT,x3-x1,boxB-boxT);
+  ctx.beginPath(); ctx.moveTo(x(R.med),boxT); ctx.lineTo(x(R.med),boxB); ctx.stroke();
+  ctx.textBaseline="bottom"; ctx.font="bold 14px Inter,Arial,sans-serif";
+  ctx.fillStyle=ink; ctx.textAlign="center"; ctx.fillText("Q1  "+pctS(R.q1), x1, boxT-10);
+  ctx.fillStyle=green; ctx.fillText("Mediana  "+pctS(R.med), x(R.med), boxT-30);
+  ctx.fillStyle=ink; ctx.fillText("Q3  "+pctS(R.q3), x3, boxT-10);
+  ctx.textBaseline="top"; ctx.fillStyle=soft; ctx.font="13px Inter,Arial,sans-serif";
+  ctx.fillText("mínimo "+pctS(R.min), x(R.min), boxB+14);
+  ctx.fillText("máximo "+pctS(R.max), x(R.max), boxB+14);
+  if(!isNaN(tpPli)){
+    const inside=(tpPli>=R.q1 && tpPli<=R.q3), col=inside?green:clay, xn=x(tpPli);
+    ctx.strokeStyle=col; ctx.lineWidth=2.5; ctx.setLineDash([5,4]);
+    ctx.beginPath(); ctx.moveTo(xn,boxT-52); ctx.lineTo(xn,boxB+40); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle=col; ctx.textAlign="center"; ctx.textBaseline="bottom"; ctx.font="bold 15px Inter,Arial,sans-serif";
+    ctx.fillText("Empresa analizada  "+pctS(tpPli), xn, boxT-56);
+  }
+  ctx.textAlign="left"; ctx.textBaseline="alphabetic"; ctx.fillStyle=soft; ctx.font="13px Inter,Arial,sans-serif";
+  ctx.fillText(opts.foot||"compar.ar", 48, H-28);
+  return cv;
+}
+function downloadChartPNG(){
+  const note=document.getElementById('wordNote');
+  try{
+    const showAdj=ADJ._on && ADJ._lastAdj;
+    const R = showAdj ? ADJ._lastAdj : LAST;
+    if(!R || !R.n) throw new Error("todavía no hay un rango para graficar.");
+    const tpPli=(ADJ._tpPli!=null)?ADJ._tpPli:NaN;
+    const sub=`${R.n} comparables · ${[...R.years].reverse().join(' · ')}${showAdj?' · rango ajustado':''}`;
+    const cv=drawBoxPlotPNG(R, tpPli, {title:PLI, sub, foot:"compar.ar · rango de tus comparables"});
+    cv.toBlob(b=>{ const url=URL.createObjectURL(b); const a=document.createElement('a');
+      a.href=url; a.download="grafico_rango.png"; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),4000); }, 'image/png');
+  }catch(e){ if(note){ note.className='wnote err'; note.textContent="No se pudo generar el gráfico: "+e.message; note.hidden=false; } }
+}
+
 function download(){
   if(!LAST) return; const R=LAST;
+  const PCTZ='0.00%', NUMZ='#,##0.00';
+  const fmtCell=(ws,c,r,z)=>{ const ref=XLSX.utils.encode_cell({c,r}); const cell=ws[ref]; if(cell&&typeof cell.v==='number'){ cell.z=z; cell.t='n'; } };
+  const fmtBlock=(ws,c0,c1,r0,r1,z)=>{ for(let c=c0;c<=c1;c++) for(let r=r0;r<=r1;r++) fmtCell(ws,c,r,z); };
   const wb=XLSX.utils.book_new();
+
   const rango=[["Indicador (PLI)",PLI],["Comparables (n)",R.n],["Años",[...R.years].reverse().join(", ")],[],
     ["Estadístico","Valor"],["Mínimo",R.min],["Cuartil inferior (Q1)",R.q1],["Mediana",R.med],["Cuartil superior (Q3)",R.q3],["Máximo",R.max]];
   const ws1=XLSX.utils.aoa_to_sheet(rango);
+  fmtBlock(ws1,1,1,5,9,PCTZ); ws1['!cols']=[{wch:24},{wch:12}];
   XLSX.utils.book_append_sheet(wb,ws1,"Rango");
+
   const head=["Empresa","RIC",...[...R.years].reverse(),"Promedio"];
   const body=[...R.comps].sort((a,b)=>b.avg-a.avg).map(c=>[c.empresa,c.ric,...[...c.byYear].reverse(),c.avg]);
   const ws2=XLSX.utils.aoa_to_sheet([head,...body]);
+  fmtBlock(ws2,2,2+R.years.length,1,body.length,PCTZ); ws2['!cols']=[{wch:32},{wch:14},...R.years.map(()=>({wch:10})),{wch:12}];
   XLSX.utils.book_append_sheet(wb,ws2,"Comparables");
 
-  // Hojas del ajuste de patrimoniales, si está activo y calculado
   if(ADJ._on && ADJ._lastAdj){
     const A=ADJ._lastAdj;
     const rangoAj=[["Indicador (PLI)",PLI],["Comparables (n)",A.n],["Años",[...A.years].reverse().join(", ")],[],
       ["Estadístico","Sin ajuste","Ajustado"],
       ["Mínimo",ADJ._lastUn.min,A.min],["Cuartil inferior (Q1)",ADJ._lastUn.q1,A.q1],
       ["Mediana",ADJ._lastUn.med,A.med],["Cuartil superior (Q3)",ADJ._lastUn.q3,A.q3],["Máximo",ADJ._lastUn.max,A.max]];
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rangoAj),"Rango ajustado");
+    const wsAj=XLSX.utils.aoa_to_sheet(rangoAj); fmtBlock(wsAj,1,2,5,9,PCTZ); wsAj['!cols']=[{wch:24},{wch:12},{wch:12}];
+    XLSX.utils.book_append_sheet(wb,wsAj,"Rango ajustado");
     const headA=["Empresa","RIC",...[...A.years].reverse(),"Promedio ajustado"];
     const bodyA=[...A.comps].sort((a,b)=>b.avg-a.avg).map(c=>[c.empresa,c.ric,...[...c.byYear].reverse(),c.avg]);
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([headA,...bodyA]),"Comparables ajustados");
+    const wsA=XLSX.utils.aoa_to_sheet([headA,...bodyA]); fmtBlock(wsA,2,2+A.years.length,1,bodyA.length,PCTZ);
+    wsA['!cols']=[{wch:32},{wch:14},...A.years.map(()=>({wch:10})),{wch:16}];
+    XLSX.utils.book_append_sheet(wb,wsA,"Comparables ajustados");
     if(!document.getElementById('biBox').hidden && ADJ._base){
       const ao=(!isNaN(ADJ._base.TA)&&!isNaN(ADJ._base.INT))?ADJ._base.TA-ADJ._base.INT:NaN;
       const aj=ajusteBaseImponible(PLI,A.med,ADJ._base.V,ADJ._base.C,ADJ._base.S,ao,ADJ.via);
       const bi=[["Ajuste de base imponible"],[],["Vía",ADJ.via],["Mediana ajustada",A.med],
         ["Indicador tested party",ADJ._tpPli],["Ajuste a la base imponible",aj],
         ["Alícuota Ganancias",ADJ.alic],["Impuesto resultante",aj==null?null:aj*ADJ.alic]];
-      XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(bi),"Base imponible");
+      const wsbi=XLSX.utils.aoa_to_sheet(bi);
+      fmtCell(wsbi,1,3,PCTZ); fmtCell(wsbi,1,4,PCTZ); fmtCell(wsbi,1,6,PCTZ);
+      fmtCell(wsbi,1,5,NUMZ); fmtCell(wsbi,1,7,NUMZ); wsbi['!cols']=[{wch:26},{wch:14}];
+      XLSX.utils.book_append_sheet(wb,wsbi,"Base imponible");
     }
   }
-  XLSX.writeFile(wb,"rango_modo2.xlsx");
+  XLSX.writeFile(wb,"rango_comparar.xlsx");
 }
 
 /* ---------- flujo de carga ---------- */
@@ -1207,6 +1292,7 @@ async function generarWord(kind, btn){
 }
 
 document.getElementById('dl').onclick=download;
+document.getElementById('dlPng').onclick=downloadChartPNG;
 document.querySelectorAll('.wbtn').forEach(b=> b.addEventListener('click', ()=>generarWord(b.dataset.doc, b)));
 document.getElementById('reset').onclick=reset;
 document.getElementById('newFile').onclick=reset;
