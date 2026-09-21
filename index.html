@@ -540,6 +540,32 @@
   .wnote{margin-top:14px; font-size:13px; padding:10px 14px; border-radius:8px; background:var(--in-tint); border-left:3px solid var(--in); color:var(--ink)}
   .wnote.err{background:var(--out-fill); border-left-color:var(--out)}
 
+  /* panel unificado tested party */
+  .tp-grid input:disabled{ opacity:.45; background:var(--line); cursor:not-allowed; color:var(--ink-soft) }
+  .tp-grid th.dis{ opacity:.5 }
+  .grid-hint{ font-size:12px; color:var(--ink-soft); margin:10px 0 0 }
+  .tp-margin{ font-size:14px; margin-bottom:14px }
+  .tp-margin b{ font-size:16px; color:var(--in) }
+  .tp-margin small{ color:var(--ink-soft); margin-left:6px }
+  .dual-col[hidden]{ display:none }
+  details.formulas{ margin-top:16px; border:1px solid var(--line); border-radius:11px; background:var(--paper); overflow:hidden }
+  details.formulas summary{ cursor:pointer; padding:12px 16px; font-size:13.5px; font-weight:500; color:var(--ink); list-style:none; user-select:none }
+  details.formulas summary::-webkit-details-marker{ display:none }
+  details.formulas summary::before{ content:"▸"; color:var(--ink-soft); margin-right:8px; display:inline-block; transition:transform .15s }
+  details.formulas[open] summary::before{ transform:rotate(90deg) }
+  .formulas-body{ padding:4px 16px 16px; border-top:1px solid var(--line) }
+  .frow{ padding:10px 0; border-bottom:1px dashed var(--line) }
+  .frow:last-of-type{ border-bottom:none }
+  .fk{ display:block; font-size:12.5px; color:var(--ink); font-weight:500; margin-bottom:5px }
+  .fk em{ color:var(--ink-soft); font-weight:400; font-style:normal }
+  .formulas code{ display:block; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12px; line-height:1.55; color:var(--ink-soft); background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:8px 11px; overflow-x:auto; white-space:nowrap }
+  .fnote{ font-size:11.5px; color:var(--ink-soft); margin:12px 0 0; line-height:1.5 }
+  /* años anulables en la tabla de comparables */
+  #tbl td.yr{ cursor:pointer; position:relative }
+  #tbl td.yr:hover{ background:var(--in-tint) }
+  #tbl td.yr.anul{ color:var(--ink-soft); text-decoration:line-through; text-decoration-color:var(--out); opacity:.65 }
+  .tblnote{ font-size:11.5px; color:var(--ink-soft); margin:8px 0 0 }
+
   footer{max-width:1080px; margin:0 auto; padding:0 clamp(18px,5vw,56px) 40px; color:var(--ink-soft); font-size:12.5px}  footer span{color:var(--in)}
 </style>
 </head>
@@ -608,42 +634,46 @@
       <div class="ends"><span>mínimo <b class="num" id="eMin">—</b></span><span>máximo <b class="num" id="eMax">—</b></span></div>
     </div>
 
-    <div class="tp">
-      <h3>Ubicar la empresa analizada</h3>
-      <p>Ingresá el indicador de la tested party (en %) y compar.ar te dice dónde cae respecto del rango.</p>
-      <div class="tp-row">
-        <div class="field"><input type="text" id="tpVal" inputmode="decimal" placeholder="8,0" aria-label="Indicador de la empresa analizada"><span>%</span></div>
-        <button class="btn" id="tpGo">Ubicar</button>
-        <div class="verdict" id="verdict"><span class="dot"></span><span id="verdictTxt"></span></div>
-      </div>
-    </div>
-
-    <!-- Ajuste de patrimoniales -->
+    <!-- Empresa analizada (tested party) -->
     <div class="adj" id="adjCard">
       <div class="adj-head">
         <div>
-          <h3>Ajuste de patrimoniales</h3>
-          <p class="adj-sub">Ajuste por capital de trabajo (cuentas a cobrar, a pagar e inventarios) sobre cada comparable.</p>
+          <h3>Empresa analizada (tested party)</h3>
+          <p class="adj-sub">Cargá sus resultados y compar.ar calcula el margen y lo ubica en el rango. El ajuste de patrimoniales es opcional: lo prende el analista.</p>
         </div>
-        <label class="switch"><input type="checkbox" id="adjOn"><span class="track"></span><span class="lbl">Aplicar</span></label>
+        <label class="switch"><input type="checkbox" id="adjOn"><span class="track"></span><span class="lbl">Aplicar ajuste</span></label>
       </div>
-      <div class="adj-body" id="adjBody" hidden>
+      <div class="adj-body" id="adjBody">
+        <div class="adj-note" id="adjNoData" hidden>Este archivo no trae la hoja <b>Data</b> con los financieros crudos, así que no puedo calcular el ajuste de patrimoniales. Podés cargar los resultados igual para ubicar el margen sin ajustar.</div>
         <div class="adj-opts">
-          <label class="chk"><input type="checkbox" id="esServ"> La empresa presta únicamente servicios (sin inventarios)</label>
+          <label class="chk"><input type="checkbox" id="esServ" disabled> La empresa presta únicamente servicios (sin inventarios)</label>
         </div>
-        <div class="adj-note" id="adjNoData" hidden>Este archivo no trae la hoja <b>Data</b> con los financieros crudos, así que no puedo calcular el ajuste. Subí el Excel completo del Modo 1.</div>
         <div id="adjInputs">
           <div class="tp-grid-scroll"><table class="tp-grid" id="tpGrid"><thead></thead><tbody></tbody></table></div>
-          <button class="btn" id="adjGo" style="margin-top:14px">Calcular rango ajustado</button>
+          <p class="grid-hint" id="gridHint">Con el ajuste desactivado alcanza con ventas, costo y gastos. Activá "Aplicar ajuste" para habilitar las columnas de patrimoniales.</p>
         </div>
 
+        <details class="formulas">
+          <summary>¿Qué fórmula aplica cada ajuste patrimonial?</summary>
+          <div class="formulas-body">
+            <div class="frow"><span class="fk">Cuentas a cobrar <em>(sobre ventas)</em></span>
+              <code>Ventas<sub>aj</sub> = Ventas − ( (CtasCobrar<sub>TP</sub> / Ventas<sub>TP</sub> × Ventas<sub>comp</sub> − CtasCobrar<sub>comp</sub>) × i / (1 + i) )</code></div>
+            <div class="frow"><span class="fk">Cuentas a pagar <em>(sobre costo)</em></span>
+              <code>Costo<sub>aj</sub> = Costo − ( (CtasPagar<sub>TP</sub> / Ventas<sub>TP</sub> × Ventas<sub>comp</sub> − CtasPagar<sub>comp</sub>) × i / (1 + i) )</code></div>
+            <div class="frow"><span class="fk">Inventarios <em>(sobre costo, si no es servicios)</em></span>
+              <code>Costo<sub>aj</sub> = Costo<sub>aj</sub> − ( (Inventarios<sub>TP</sub> / Ventas<sub>TP</sub> × Ventas<sub>comp</sub> − Inventarios<sub>comp</sub>) × i )</code></div>
+            <p class="fnote"><b>i</b> = tasa de interés del año · <b>TP</b> = empresa analizada · <b>comp</b> = cada comparable. Con Ventas<sub>aj</sub> y Costo<sub>aj</sub> se recalcula el margen de cada comparable, y de ahí el rango ajustado.</p>
+          </div>
+        </details>
+
         <div class="adj-result" id="adjResult" hidden>
+          <div class="tp-margin">Margen de la empresa analizada: <b class="num" id="tpMargin">—</b> <small id="tpMarginNote">calculado de sus resultados</small></div>
           <div class="dual">
-            <div class="dual-col">
-              <div class="dual-k">Rango sin ajustar</div>
+            <div class="dual-col" id="dualUn">
+              <div class="dual-k">Rango sin ajustar <span class="pill" id="pillUn" hidden>vinculante</span></div>
               <div class="dual-v"><span class="num" id="uQ1">—</span> <span class="sep">·</span> <span class="num strong" id="uMed">—</span> <span class="sep">·</span> <span class="num" id="uQ3">—</span></div>
             </div>
-            <div class="dual-col binding">
+            <div class="dual-col binding" id="dualAdj">
               <div class="dual-k">Rango ajustado <span class="pill">vinculante</span></div>
               <div class="dual-v"><span class="num" id="aQ1">—</span> <span class="sep">·</span> <span class="num strong" id="aMed">—</span> <span class="sep">·</span> <span class="num" id="aQ3">—</span></div>
             </div>
@@ -661,7 +691,7 @@
 
           <div class="bi" id="biBox" hidden>
             <h4>Ajuste de base imponible</h4>
-            <p>La empresa analizada cae por debajo del rango ajustado. Para llevar su indicador a la mediana:</p>
+            <p>La empresa analizada cae por debajo del rango vinculante. Para llevar su indicador a la mediana:</p>
             <div class="bi-row">
               <div class="seg" id="viaSeg">
                 <button data-via="costos" class="on">Vía costos (importador)</button>
@@ -684,6 +714,7 @@
       <div class="card">
         <div class="card-h"><h3>Comparables</h3><span class="muted" id="tblYears"></span></div>
         <div class="tbl-scroll"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+        <p class="tblnote">Tocá el valor de un año para anularlo si fue atípico; el promedio y los rangos se recalculan al instante. Tocá de nuevo para reactivarlo.</p>
       </div>
       <div class="card">
         <div class="card-h"><h3>Ajustes</h3></div>
@@ -742,6 +773,8 @@ function parseNum(v){
 /* ---------- estado ---------- */
 let DS=null, PLI=null, NY=3;
 let ADJ={on:false, esServ:false, tp:{}, tasas:{}, via:"costos", alic:0.35};
+let ANUL=new Set(); // claves "ric\tYYYY" de años anulados
+const _isAnul=(ric,y)=>ANUL.has(ric+"\t"+y);
 
 /* ---------- ajuste de patrimoniales (verificado vs pipeline) ---------- */
 function safeDiv(a,b){ return (!isNaN(a)&&!isNaN(b)&&b!==0)?a/b:NaN; }
@@ -789,7 +822,10 @@ function computeAdjusted(){
   const comps=[];
   DS.rows.filter(r=>r.accepted && r.fin).forEach(r=>{
     const R=ajustarComp(r.fin,years,PLI,ADJ.tp,ADJ.tasas,ADJ.esServ);
-    if(!isNaN(R.prom)) comps.push({empresa:r.empresa, ric:r.ric, byYear:years.map(y=>R.aj[y]), avg:R.prom});
+    years.forEach(y=>{ if(_isAnul(r.ric,y)) R.aj[y]=NaN; });
+    const vals=years.map(y=>R.aj[y]).filter(v=>!isNaN(v));
+    const prom=vals.length? vals.reduce((a,b)=>a+b,0)/vals.length : NaN;
+    if(!isNaN(prom)) comps.push({empresa:r.empresa, ric:r.ric, byYear:years.map(y=>R.aj[y]), avg:prom});
   });
   return {years, comps, ...rangoDe(comps.map(c=>c.avg))};
 }
@@ -859,7 +895,7 @@ function compute(){
   const years=DS.plis[PLI].slice(0,NY);
   const comps=[];
   DS.rows.filter(r=>r.accepted).forEach(r=>{
-    const per=years.map(y=>r.vals[PLI]?.[y]).filter(v=>!isNaN(v));
+    const per=years.filter(y=>!_isAnul(r.ric,y)).map(y=>r.vals[PLI]?.[y]).filter(v=>!isNaN(v));
     if(!per.length) return;
     const avg=per.reduce((a,b)=>a+b,0)/per.length;
     comps.push({empresa:r.empresa, ric:r.ric, byYear:years.map(y=>r.vals[PLI]?.[y]), avg});
@@ -899,8 +935,6 @@ function render(){
   document.getElementById('tblYears').textContent=[...years].reverse().join(' · ');
   renderTable(R);
   renderYrs();
-  // re-evaluar tested party si había un valor
-  const tv=document.getElementById('tpVal').value; if(tv.trim()) locateTP();
   syncAdjust();
 }
 
@@ -911,8 +945,12 @@ function renderTable(R){
     [...years].reverse().map(y=>`<th class="num">${y}</th>`).join('')+
     '<th class="avg num" data-k="avg">Promedio</th></tr>';
   const rows=[...R.comps].sort((a,b)=>b.avg-a.avg);
+  const yAsc=[...years].reverse();
   tbody.innerHTML=rows.map(c=>{
-    const cells=[...c.byYear].reverse().map(v=>`<td class="num">${isNaN(v)?'—':pct(v)}</td>`).join('');
+    const vAsc=[...c.byYear].reverse();
+    const cells=yAsc.map((y,idx)=>{ const v=vAsc[idx]; const an=_isAnul(c.ric,y);
+      return `<td class="num yr${an?' anul':''}" data-ric="${c.ric}" data-y="${y}" title="Tocá para ${an?'reactivar':'anular'} ${y}">${isNaN(v)?'—':pct(v)}</td>`;
+    }).join('');
     return `<tr><td>${c.empresa}</td>${cells}<td class="avg num">${pct(c.avg)}</td></tr>`;
   }).join('');
 }
@@ -923,26 +961,6 @@ function renderYrs(){
     b.onclick=()=>{ NY=i; render(); }; box.appendChild(b); }
 }
 
-function locateTP(){
-  if(!LAST) return;
-  const raw=document.getElementById('tpVal').value;
-  const num=parseNum(raw); const v=isNaN(num)?NaN:num/100;
-  const verdict=document.getElementById('verdict'); const vt=document.getElementById('verdictTxt');
-  const needle=document.getElementById('needle');
-  if(isNaN(v)){ verdict.className='verdict'; needle.className='bar-needle'; return; }
-  const R=LAST; let cls, txt, sub='';
-  const gapMed=R.med-v;
-  const gapTxt=Math.abs(gapMed)<1e-9?'': ` · ${gapMed>0?'faltan':'sobran'} ${pct(Math.abs(gapMed))} a la mediana`;
-  if(v<R.q1){ cls='out'; txt=(v<R.min?'Por debajo del mínimo':'Por debajo del rango'); sub=`faltan ${pct(R.q1-v)} para Q1`; }
-  else if(v>R.q3){ cls='in'; txt='Por encima del rango'; sub='sin riesgo de ajuste por esta vía'; }
-  else { cls='in'; txt='Dentro del rango intercuartil'; sub=gapTxt.replace(' · ',''); }
-  verdict.className='verdict show '+cls;
-  vt.innerHTML=txt+(sub?` <small>${sub}</small>`:'');
-  // aguja
-  const span=(R.max-R.min)||1; let p=((v-R.min)/span)*100; p=Math.max(-3,Math.min(103,p));
-  needle.style.left=p+'%'; needle.dataset.label=pct(v); needle.className='bar-needle show '+cls;
-}
-
 /* ---------- exportar ---------- */
 /* ---------- UI del ajuste de patrimoniales ---------- */
 const TP_COLS=[["V","Ventas"],["C","Costo"],["S","Gastos op."],["AR","Ctas. a cobrar"],["AP","Ctas. a pagar"],["INV","Inventarios"],["i","Tasa %"]];
@@ -950,16 +968,18 @@ function renderTpGrid(){
   const years=DS.plis[PLI].slice(0,NY);
   const thead=document.querySelector('#tpGrid thead');
   const tbody=document.querySelector('#tpGrid tbody');
-  thead.innerHTML='<tr><th>Año</th>'+TP_COLS.map(c=>`<th>${c[1]}</th>`).join('')+'</tr>';
+  const patrim=new Set(['AR','AP','INV','i']); const dis=!ADJ.on;
+  thead.innerHTML='<tr><th>Año</th>'+TP_COLS.map(c=>`<th class="${dis&&patrim.has(c[0])?'dis':''}">${c[1]}</th>`).join('')+'</tr>';
   tbody.innerHTML=years.map(y=>{
     const t=ADJ.tp[y]||{}; const iv=(ADJ.tasas[y]!=null)?(ADJ.tasas[y]*100):'';
     const cells=TP_COLS.map(c=>{
-      if(c[0]==='i') return `<td><input data-y="${y}" data-k="i" inputmode="decimal" value="${iv===''?'':String(iv).replace('.',',')}"></td>`;
-      const v=t[c[0]]; return `<td><input data-y="${y}" data-k="${c[0]}" inputmode="decimal" value="${v==null||isNaN(v)?'':String(v).replace('.',',')}"></td>`;
+      const d=(dis&&patrim.has(c[0]))?' disabled':'';
+      if(c[0]==='i') return `<td><input data-y="${y}" data-k="i" inputmode="decimal"${d} value="${iv===''?'':String(iv).replace('.',',')}"></td>`;
+      const v=t[c[0]]; return `<td><input data-y="${y}" data-k="${c[0]}" inputmode="decimal"${d} value="${v==null||isNaN(v)?'':String(v).replace('.',',')}"></td>`;
     }).join('');
     return `<tr><td>${y}</td>${cells}</tr>`;
   }).join('');
-  tbody.querySelectorAll('input').forEach(inp=>inp.addEventListener('input',readTpGrid));
+  tbody.querySelectorAll('input').forEach(inp=>inp.addEventListener('input',()=>{ readTpGrid(); runTested(); }));
 }
 function readTpGrid(){
   ADJ.tp={}; ADJ.tasas={};
@@ -970,12 +990,11 @@ function readTpGrid(){
   });
 }
 function syncAdjust(){
-  // se llama en cada render (cambio de PLI/años): reconstruye grilla y recalcula si estaba activo
-  const hasFin=DS.hasFin;
-  document.getElementById('adjNoData').hidden=hasFin;
-  document.getElementById('adjInputs').style.display=hasFin?'':'none';
-  if(!ADJ.on){ return; }
-  if(hasFin){ renderTpGrid(); runAdjust(); }
+  document.getElementById('adjNoData').hidden = !(ADJ.on && !DS.hasFin);
+  document.getElementById('esServ').disabled = !ADJ.on;
+  document.getElementById('gridHint').hidden = ADJ.on;
+  renderTpGrid();
+  runTested();
 }
 function drawAdjBar(R, tpVal){
   const span=(R.max-R.min)||1, pos=v=>((v-R.min)/span)*100;
@@ -989,31 +1008,46 @@ function drawAdjBar(R, tpVal){
   else { let p=Math.max(-3,Math.min(103,pos(tpVal))); ndl.style.left=p+'%'; ndl.dataset.label=pct(tpVal);
     ndl.className='bar-needle show '+(tpVal>=R.q1?'in':''); }
 }
-function runAdjust(){
+function runTested(){
   readTpGrid();
-  const Runadj=compute(); const R=computeAdjusted();
-  if(!R.n){ document.getElementById('adjResult').hidden=true; return; }
-  document.getElementById('adjResult').hidden=false;
-  document.getElementById('uQ1').textContent=pct(Runadj.q1); document.getElementById('uMed').textContent=pct(Runadj.med); document.getElementById('uQ3').textContent=pct(Runadj.q3);
-  document.getElementById('aQ1').textContent=pct(R.q1); document.getElementById('aMed').textContent=pct(R.med); document.getElementById('aQ3').textContent=pct(R.q3);
+  const on=ADJ.on;
+  const Runadj=compute();
+  let Radj=null;
+  if(on && DS.hasFin){ Radj=computeAdjusted(); if(!Radj.n) Radj=null; }
+  const binding=(on && Radj)?Radj:Runadj;
   const {pli:tpPli, base}=tpPLIyBase();
-  drawAdjBar(R, tpPli);
-  // veredicto sobre el rango ajustado (vinculante)
+
+  // si no hay resultados de la tested y no hay ajuste que mostrar, ocultar
+  if(isNaN(tpPli) && !(on && Radj)){ document.getElementById('adjResult').hidden=true; return; }
+  document.getElementById('adjResult').hidden=false;
+
+  document.getElementById('tpMargin').textContent = isNaN(tpPli)?'—':pct(tpPli);
+  document.getElementById('uQ1').textContent=pct(Runadj.q1); document.getElementById('uMed').textContent=pct(Runadj.med); document.getElementById('uQ3').textContent=pct(Runadj.q3);
+  const dualAdj=document.getElementById('dualAdj'), dualUn=document.getElementById('dualUn'), pillUn=document.getElementById('pillUn');
+  if(on && Radj){
+    dualAdj.hidden=false; dualUn.classList.remove('binding'); pillUn.hidden=true;
+    document.getElementById('aQ1').textContent=pct(Radj.q1); document.getElementById('aMed').textContent=pct(Radj.med); document.getElementById('aQ3').textContent=pct(Radj.q3);
+  } else { dualAdj.hidden=true; dualUn.classList.add('binding'); pillUn.hidden=false; }
+
+  drawAdjBar(binding, tpPli);
+
   const vA=document.getElementById('verdictA'), vtA=document.getElementById('verdictTxtA');
-  if(isNaN(tpPli)){ vA.className='verdict'; }
+  if(isNaN(tpPli)){ vA.className='verdict'; vtA.innerHTML=''; }
   else{
-    let cls,txt,sub='';
-    if(tpPli<R.q1){ cls='out'; txt=(tpPli<R.min?'Por debajo del mínimo':'Por debajo del rango ajustado'); sub=`la tested party rinde ${pct(tpPli)}`; }
-    else if(tpPli>R.q3){ cls='in'; txt='Por encima del rango ajustado'; sub=`rinde ${pct(tpPli)}`; }
-    else { cls='in'; txt='Dentro del rango ajustado'; sub=`rinde ${pct(tpPli)}`; }
-    vA.className='verdict show '+cls; vtA.innerHTML=txt+(sub?` <small>${sub}</small>`:'');
+    const etq=(on&&Radj)?'ajustado':'de comparables';
+    let cls,txt;
+    if(tpPli<binding.q1){ cls='out'; txt=(tpPli<binding.min?'Por debajo del mínimo':'Por debajo del rango '+etq); }
+    else if(tpPli>binding.q3){ cls='in'; txt='Por encima del rango '+etq; }
+    else { cls='in'; txt='Dentro del rango '+etq; }
+    vA.className='verdict show '+cls; vtA.innerHTML=txt+` <small>rinde ${pct(tpPli)}</small>`;
   }
-  // base imponible si cae por debajo
+
   const bi=document.getElementById('biBox');
-  if(!isNaN(tpPli) && tpPli<R.q1 && base && !isNaN(base.V) && !isNaN(base.C)){
-    bi.hidden=false; renderBI(R.med, base);
+  if(!isNaN(tpPli) && tpPli<binding.q1 && base && !isNaN(base.V) && !isNaN(base.C)){
+    bi.hidden=false; renderBI(binding.med, base);
   } else { bi.hidden=true; }
-  ADJ._lastR=R; ADJ._lastUn=Runadj; ADJ._base=base; ADJ._tpPli=tpPli;
+
+  ADJ._lastR=binding; ADJ._lastUn=Runadj; ADJ._lastAdj=Radj; ADJ._base=base; ADJ._tpPli=tpPli; ADJ._on=(on&&!!Radj);
 }
 function renderBI(mediana, base){
   const ao=(!isNaN(base.TA)&&!isNaN(base.INT))?base.TA-base.INT:NaN;
@@ -1037,8 +1071,8 @@ function download(){
   XLSX.utils.book_append_sheet(wb,ws2,"Comparables");
 
   // Hojas del ajuste de patrimoniales, si está activo y calculado
-  if(ADJ.on && ADJ._lastR){
-    const A=ADJ._lastR;
+  if(ADJ._on && ADJ._lastAdj){
+    const A=ADJ._lastAdj;
     const rangoAj=[["Indicador (PLI)",PLI],["Comparables (n)",A.n],["Años",[...A.years].reverse().join(", ")],[],
       ["Estadístico","Sin ajuste","Ajustado"],
       ["Mínimo",ADJ._lastUn.min,A.min],["Cuartil inferior (Q1)",ADJ._lastUn.q1,A.q1],
@@ -1069,11 +1103,12 @@ function clearError(){ document.getElementById('err').classList.remove('show'); 
 
 function loadDataset(ds){
   DS=ds; PLI=Object.keys(ds.plis)[0]; NY=Math.min(3, ds.plis[PLI].length);
-  // init ajuste
+  // init ajuste + anulaciones
   ADJ={on:false, esServ:false, tp:{}, tasas:{}, via:"costos", alic:0.35};
+  ANUL=new Set();
   if(ds.tpDefault){ for(const y in ds.tpDefault){ ADJ.tp[+y]={...ds.tpDefault[y]}; } }
   if(ds.tasasDefault){ for(const y in ds.tasasDefault){ ADJ.tasas[+y]=ds.tasasDefault[y]; } }
-  document.getElementById('adjOn').checked=false; document.getElementById('adjBody').hidden=true;
+  document.getElementById('adjOn').checked=false;
   document.getElementById('esServ').checked=false;
   document.getElementById('adjResult').hidden=true;
   const sel=document.getElementById('pliSel'); sel.innerHTML=Object.keys(ds.plis).map(p=>`<option>${p}</option>`).join('');
@@ -1091,8 +1126,6 @@ function reset(){
   document.getElementById('drop').style.display='';
   document.getElementById('newFile').style.display='none';
   document.getElementById('file').value='';
-  document.getElementById('tpVal').value='';
-  document.getElementById('verdict').className='verdict';
   clearError();
 }
 function handleFile(f){
@@ -1112,8 +1145,6 @@ document.getElementById('pick').onclick=()=>document.getElementById('file').clic
 document.getElementById('file').onchange=e=>handleFile(e.target.files[0]);
 document.getElementById('sample').onclick=()=>{ clearError(); loadDataset(normalizeSample(SAMPLE)); };
 document.getElementById('pliSel').onchange=e=>{ PLI=e.target.value; NY=Math.min(NY,DS.plis[PLI].length); render(); };
-document.getElementById('tpGo').onclick=locateTP;
-document.getElementById('tpVal').addEventListener('keydown',e=>{ if(e.key==='Enter')locateTP(); });
 /* ---------- generación de Word (docx-js, en el navegador) ---------- */
 function _accRics(){ return DS.rows.filter(r=>r.accepted).map(r=>r.ric); }
 function _dataByRic(){ const years=DS.plis[PLI]; const o={};
@@ -1150,7 +1181,7 @@ async function _dl(blob, filename){ const url=URL.createObjectURL(blob);
   a.remove(); setTimeout(()=>URL.revokeObjectURL(url),4000); }
 function _buildDoc(kind){
   const NY3=DS.plis[PLI].slice(0,NY);
-  if(kind==='tested'){ const tpPli=(ADJ.on?tpPLIyBase().pli:NaN);
+  if(kind==='tested'){ const tpPli=tpPLIyBase().pli;
     const nombre=document.getElementById('tpName').value.trim()||"Parte analizada";
     return WordGen.testedParty(_tpObj(),{nombre,pliNombre:PLI,pliValor:tpPli,esServicios:ADJ.esServ,hacerAjuste:ADJ.on,years:NY3}); }
   if(kind==='fin') return WordGen.estadosFinancieros(_dataByRic(),_pliByRic(),_accRics(),NY3,{pliNombre:PLI});
@@ -1179,13 +1210,9 @@ document.getElementById('dl').onclick=download;
 document.querySelectorAll('.wbtn').forEach(b=> b.addEventListener('click', ()=>generarWord(b.dataset.doc, b)));
 document.getElementById('reset').onclick=reset;
 document.getElementById('newFile').onclick=reset;
-// ---- ajuste de patrimoniales ----
-document.getElementById('adjOn').addEventListener('change',e=>{
-  ADJ.on=e.target.checked; document.getElementById('adjBody').hidden=!ADJ.on;
-  if(ADJ.on) syncAdjust();
-});
-document.getElementById('esServ').addEventListener('change',e=>{ ADJ.esServ=e.target.checked; if(ADJ.on) runAdjust(); });
-document.getElementById('adjGo').onclick=()=>runAdjust();
+// ---- empresa analizada / ajuste ----
+document.getElementById('adjOn').addEventListener('change',e=>{ ADJ.on=e.target.checked; syncAdjust(); });
+document.getElementById('esServ').addEventListener('change',e=>{ ADJ.esServ=e.target.checked; if(ADJ.on) runTested(); });
 document.getElementById('viaSeg').addEventListener('click',e=>{
   const b=e.target.closest('button[data-via]'); if(!b) return;
   ADJ.via=b.dataset.via;
@@ -1194,6 +1221,13 @@ document.getElementById('viaSeg').addEventListener('click',e=>{
 });
 document.getElementById('alic').addEventListener('change',e=>{ ADJ.alic=parseFloat(e.target.value);
   if(ADJ._lastR && !document.getElementById('biBox').hidden) renderBI(ADJ._lastR.med, ADJ._base); });
+// ---- anular años atípicos (clic en la celda del año) ----
+document.querySelector('#tbl tbody').addEventListener('click',e=>{
+  const td=e.target.closest('td.yr'); if(!td) return;
+  const key=td.dataset.ric+"\t"+td.dataset.y;
+  if(ANUL.has(key)) ANUL.delete(key); else ANUL.add(key);
+  render();
+});
 ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('drag');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag');}));
 drop.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; handleFile(f); });
