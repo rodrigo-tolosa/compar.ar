@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>compar.ar — rango de tus comparables</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700&family=Inter:wght@400;450;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
+<script>/* wordgen.js — generación de los anexos Word del Modo 2 con docx-js.
+   Corre igual en Node (verificación) y en el navegador (paritas).
+   La imagen del embudo se pasa como Uint8Array (canvas en browser, placeholder en Node). */
+(function (root) {
+  const D = ((typeof require === 'function' && typeof window === 'undefined') ? require('docx') : root.docx) || {};
+
+  const {
+    Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+    WidthType, BorderStyle, ShadingType, AlignmentType, ImageRun, PageBreak
+  } = D;
+
+  const ARIAL = "Arial";
+  const NAVY = "1F4E79", CELESTE = "B4C6E7";
+
+  /* ---------- formato de números (idéntico al pipeline LATAM) ---------- */
+  function fmtNum(v){ if(v===null||v===undefined||isNaN(v)) return "-";
+    return Number(v).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function fmtPct(v){ if(v===null||v===undefined||isNaN(v)) return "-";
+    return (Number(v)*100).toFixed(2).replace('.',',')+'%'; }
+  const hp = pt => pt*2; // half-points
+
+  /* ---------- helpers de celda ---------- */
+  function run(text, {bold=false, size=8, color=null}={}){
+    return new TextRun({ text: text==null?"":String(text), bold, size:hp(size), font:ARIAL, color:color||undefined });
+  }
+  function para(text, {bold=false, size=8, align=AlignmentType.LEFT, color=null}={}){
+    return new Paragraph({ alignment:align, spacing:{after:0,before:0},
+      children:[ run(text,{bold,size,color}) ] });
+  }
+  function bord(top,bottom){ // top/bottom: 'single'|'double'|null
+    const mk = s => s ? {style:(s==='double'?BorderStyle.DOUBLE:BorderStyle.SINGLE), size:4, color:"auto"}
+                      : {style:BorderStyle.NONE};
+    return { top:mk(top), bottom:mk(bottom), left:{style:BorderStyle.NONE},
+             right:{style:BorderStyle.NONE}, insideHorizontal:{style:BorderStyle.NONE},
+             insideVertical:{style:BorderStyle.NONE} };
+  }
+  function cell(children, {span=1, fill=null, borders=null, widthPct=null, align=AlignmentType.LEFT}={}){
+    const opts = { children: Array.isArray(children)?children:[children] };
+    if(span>1) opts.columnSpan = span;
+    if(fill) opts.shading = { fill, type:ShadingType.CLEAR, color:"auto" };
+    if(borders) opts.borders = borders;
+    if(widthPct!=null) opts.width = { size:widthPct, type:WidthType.PERCENTAGE };
+    return new TableCell(opts);
+  }
+  function tbl(rows, {grid=false, widthPct=100}={}){
+    const o = { rows, width:{size:widthPct, type:WidthType.PERCENTAGE} };
+    if(grid) o.borders = undefined; // Table Grid se emula con bordes por celda cuando hace falta
+    return new Table(o);
+  }
+  const MARGINS = { top:1417, bottom:1417, left:1701, right:1701 }; // 2.5cm / 3cm en twips
+
+  function doc(children){
+    return new Document({ sections:[{ properties:{ page:{ margin:MARGINS } }, children }] });
+  }
+
+  /* ================= 1. ESTADOS FINANCIEROS DE COMPARABLES ================= */
+  function estadosFinancieros(dataByRic, pliByRic, aceptadasRics, yearsDesc, opt={}){
+    const yearsFin = yearsDesc.slice(0,3);
+    const NA = "n.a.";
+    const F = {V:"Revenue from Goods & Services",C:"Cost of Revenues - Total",
+      S:"Selling General & Administrative Expenses - Total",AR:"AccountsReceivable",
+      AP:"AccountsPayable",INV:"Inventories"};
+    const children = [];
+    let iEmp = 0;
+    const dataRow = (v,{bold=false,isPct=false,label,borders=null})=>{
+      const cells=[ cell(para(label,{bold,size:8}), {widthPct:46, borders}) ];
+      v.forEach(val=>{
+        const txt = (val==null||isNaN(val)) ? NA : (isPct?fmtPct(val):fmtNum(val));
+        cells.push(cell(para(txt,{bold,size:8,align:AlignmentType.RIGHT}),{widthPct:18,borders}));
+      });
+      return new TableRow({children:cells});
+    };
+    const emptyRow=(top,bottom,ncol)=> new TableRow({children:
+      Array.from({length:ncol},()=>cell(para(""),{borders:bord(top,bottom)}))});
+    const titleRow=(label,top,bottom,ncol)=> new TableRow({children:
+      [cell(para(label,{bold:true}),{borders:bord(top,bottom)})].concat(
+        Array.from({length:ncol-1},()=>cell(para(""),{borders:bord(top,bottom)})))});
+
+    aceptadasRics.forEach(ric=>{
+      const dr = dataByRic[ric]; if(!dr) return;
+      const anios = yearsFin.filter(y=>{ const v=dr[y]&&dr[y].V; return v!=null && !isNaN(v); }).sort((a,b)=>a-b);
+      if(!anios.length) return;
+      const ncol = 1+anios.length;
+      const g = k => anios.map(y=> (dr[y]? dr[y][k] : NaN));
+      const ventas=g('V'), cogs=g('C'), sga=g('S');
+      const ub = ventas.map((v,i)=> (v==null||isNaN(v)||cogs[i]==null||isNaN(cogs[i]))?NaN:v-cogs[i]);
+      const uo = ventas.map((v,i)=> (v==null||isNaN(v)||cogs[i]==null||isNaN(cogs[i])||sga[i]==null||isNaN(sga[i]))?NaN:v-cogs[i]-sga[i]);
+      const nombre = (dr.nombre||ric).toUpperCase();
+
+      if(iEmp>0) children.push(new Paragraph({children:[new TextRun("")]})); // separador
+      const rows=[];
+      rows.push(new TableRow({children:[ cell(para(nombre,{bold:true}),{span:ncol,borders:bord('single',null)}) ]}));
+      rows.push(emptyRow(null,'double',ncol)); // separador bajo el nombre
+      // header fechas
+      const hcells=[ cell(para("Fin del Ejercicio Fiscal",{bold:true}),{widthPct:46}) ];
+      anios.forEach(y=> hcells.push(cell(para("31/12/"+String(y).slice(-2),{bold:true,align:AlignmentType.CENTER}),{widthPct:18})));
+      rows.push(new TableRow({children:hcells}));
+      rows.push(titleRow("Del Estado de Resultados",'single','single',ncol));
+      rows.push(dataRow(ventas,{label:"Ventas"}));
+      rows.push(dataRow(cogs,{label:"Costo Directo"}));
+      rows.push(dataRow(ub,{label:"Resultado Bruto",bold:true}));
+      rows.push(dataRow(sga,{label:"Gastos Operativos"}));
+      rows.push(dataRow(uo,{label:"Resultado Operativo",bold:true}));
+      // indicador de rentabilidad (no ajustado) del PLI principal
+      const pr = pliByRic[ric];
+      if(pr && opt.pliNombre){
+        rows.push(emptyRow(null,'single',ncol));
+        rows.push(titleRow("Indicadores de Rentabilidad",'single','single',ncol));
+        const vpli = anios.map(y=> pr[opt.pliNombre] ? pr[opt.pliNombre][y] : NaN);
+        rows.push(dataRow(vpli,{label:opt.pliNombre,isPct:true}));
+      }
+      children.push(tbl(rows));
+      iEmp++;
+    });
+    if(!children.length) children.push(para("Sin empresas aceptadas."));
+    return doc(children);
+  }
+
+  /* ================= 2. TESTED PARTY ================= */
+  function testedParty(tp, opt={}){
+    const { nombre="PARTE ANALIZADA", pliNombre="", pliValor=NaN,
+            esServicios=false, hacerAjuste=false, years=[] } = opt;
+    const yearsAsc = years.slice().sort((a,b)=>a-b);
+    const yLast = yearsAsc[yearsAsc.length-1];
+    const t = y => tp[y]||{};
+    const V=t(yLast).V, C=t(yLast).C, S=t(yLast).S;
+    const ub = (V==null||isNaN(V)||C==null||isNaN(C))?NaN:V-C;
+    const uo = (isNaN(ub)||S==null||isNaN(S))?NaN:ub-S;
+    const avg = k => { const xs=yearsAsc.map(y=>t(y)[k]).filter(x=>x!=null&&!isNaN(x)); return xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:NaN; };
+    const ccAvg=avg('AR'), cpAvg=avg('AP'), invAvg=avg('INV');
+    const NCOL = (hacerAjuste && yearsAsc.length)? 1+yearsAsc.length : 2;
+    const rows=[];
+    const single=(label,val,{bold=false,isPct=false,top=null,bottom=null}={})=>{
+      const cells=[ cell(para(label,{bold}),{borders:bord(top,bottom)}) ];
+      for(let j=1;j<NCOL-1;j++) cells.push(cell(para(""),{borders:bord(top,bottom)}));
+      const txt=(val==null||isNaN(val))?"":(isPct?fmtPct(val):fmtNum(val));
+      cells.push(cell(para(txt,{bold,align:AlignmentType.RIGHT}),{borders:bord(top,bottom)}));
+      rows.push(new TableRow({children:cells}));
+    };
+    const multi=(label,dict,{bold=false,isPct=false}={})=>{
+      const cells=[ cell(para(label,{bold})) ];
+      yearsAsc.forEach(y=>{ const val=dict?dict[y]:NaN; const txt=(val==null||isNaN(val))?"":(isPct?fmtPct(val):fmtNum(val));
+        cells.push(cell(para(txt,{bold,align:AlignmentType.RIGHT}))); });
+      rows.push(new TableRow({children:cells}));
+    };
+    const title=(label,top,bottom)=>{ const cells=[cell(para(label,{bold:true}),{borders:bord(top,bottom)})];
+      for(let j=1;j<NCOL;j++) cells.push(cell(para(""),{borders:bord(top,bottom)}));
+      rows.push(new TableRow({children:cells})); };
+    const empty=(top,bottom)=> rows.push(new TableRow({children:
+      Array.from({length:NCOL},()=>cell(para(""),{borders:bord(top,bottom)}))}));
+
+    rows.push(new TableRow({children:[cell(para(nombre.toUpperCase(),{bold:true}),{span:NCOL,borders:bord('single',null)})]}));
+    rows.push(new TableRow({children:[cell(para("(cifras expresadas en $)"),{span:NCOL,borders:bord(null,'single')})]}));
+    // header años
+    const hc=[cell(para("Fin del Ejercicio Fiscal",{bold:true}),{borders:bord(null,'single')})];
+    if(hacerAjuste && yearsAsc.length){ yearsAsc.forEach(y=> hc.push(cell(para("31/12/"+String(y).slice(-4),{bold:true,align:AlignmentType.RIGHT}),{borders:bord(null,'single')}))); }
+    else { for(let j=1;j<NCOL-1;j++) hc.push(cell(para(""),{borders:bord(null,'single')}));
+      hc.push(cell(para("31/12/"+String(yLast).slice(-2),{bold:true,align:AlignmentType.RIGHT}),{borders:bord(null,'single')})); }
+    rows.push(new TableRow({children:hc}));
+
+    title("Del Estado de Resultados",'single','single');
+    single("Ventas",V);
+    single("Costo Directo",C);
+    single("Resultado Bruto",ub,{bold:true});
+    single("Gastos Operativos",S);
+    single("Resultado Operativo",uo,{bold:true});
+
+    if(hacerAjuste && yearsAsc.length){
+      empty(null,'single'); title("Activos Relevantes",null,'single');
+      multi("Cuentas a Cobrar", Object.fromEntries(yearsAsc.map(y=>[y,t(y).AR])));
+      if(!esServicios) multi("Inventarios", Object.fromEntries(yearsAsc.map(y=>[y,t(y).INV])));
+      empty(null,'single'); title("Pasivos Relevantes",null,'single');
+      multi("Cuentas a pagar", Object.fromEntries(yearsAsc.map(y=>[y,t(y).AP])));
+      empty(null,'single'); title("Promedios de Activos y Pasivos Relevantes",null,'single');
+      single("Cuentas a Cobrar",ccAvg);
+      if(!esServicios) single("Inventarios",invAvg);
+      single("Cuentas a pagar",cpAvg);
+      empty(null,'single'); title("Porcentaje sobre Ventas",null,'single');
+      single("Cuentas a Cobrar", (V&&!isNaN(V))?ccAvg/V:NaN, {isPct:true});
+      if(!esServicios) single("Inventarios",(V&&!isNaN(V))?invAvg/V:NaN,{isPct:true});
+      single("Cuentas a pagar",(V&&!isNaN(V))?cpAvg/V:NaN,{isPct:true});
+    }
+    empty(null,'single'); title("Indicadores de Rentabilidad",'single','single');
+    single(pliNombre,pliValor,{isPct:true});
+    rows.push(new TableRow({children:[cell(para("Fuente: Estados Contables Auditados de la Compañía"),{span:NCOL,borders:bord('single',null)})]}));
+    return doc([ tbl(rows) ]);
+  }
+
+  /* ================= 3. DESCRIPCIÓN DE ACEPTADAS ================= */
+  function descripcion(mrRows){
+    const acc = mrRows.filter(r=> ["si","sí","s","yes"].includes(String(r["Aceptada (Si/No)"]||"").trim().toLowerCase()));
+    const rows=[];
+    acc.forEach(r=>{
+      const nombre = String(r["Empresa"] ?? r["RIC"] ?? "");
+      let desc = r["Descripcion de Negocio"]; desc = (desc==null||String(desc).toLowerCase()==="nan")?"":String(desc);
+      rows.push(new TableRow({children:[ cell(para(nombre,{bold:true,size:10}),{fill:CELESTE,borders:bord('single','single')}) ]}));
+      rows.push(new TableRow({children:[ cell(para(desc,{size:9}),{borders:bord(null,'single')}) ]}));
+    });
+    if(!rows.length) return doc([para("Sin empresas aceptadas.")]);
+    return doc([ tbl(rows,{grid:true}) ]);
+  }
+
+  /* ================= 4. LISTADO DE ACEPTADAS ================= */
+  function listado(mrRows){
+    const acc = mrRows.filter(r=> ["si","sí","s","yes"].includes(String(r["Aceptada (Si/No)"]||"").trim().toLowerCase()));
+    const rows=[ new TableRow({children:[
+      cell(para("Compañía",{bold:true,size:10,color:"FFFFFF"}),{fill:NAVY,widthPct:75,borders:bord('single','single')}),
+      cell(para("RIC",{bold:true,size:10,color:"FFFFFF"}),{fill:NAVY,widthPct:25,borders:bord('single','single')}) ]}) ];
+    acc.forEach((r,i)=>{
+      const fill = (i%2===1)?CELESTE:null;
+      rows.push(new TableRow({children:[
+        cell(para(String(r["Empresa"]??r["RIC"]??""),{size:9}),{fill,widthPct:75,borders:bord(null,'single')}),
+        cell(para(String(r["RIC"]??""),{size:9}),{fill,widthPct:25,borders:bord(null,'single')}) ]}));
+    });
+    if(acc.length===0) return doc([para("Sin empresas aceptadas.")]);
+    return doc([ tbl(rows,{grid:true}) ]);
+  }
+
+  /* ================= 5. RECHAZOS (+ embudo) ================= */
+  function construirEmbudo(analisis, mrRows){
+    if(!analisis || !analisis.length) return [];
+    const cols = Object.keys(analisis[0]);
+    const pasa = (r,c)=> String(r[c]||"").trim().toUpperCase()==="PASA";
+    const total = analisis.length;
+    const stages=[["Universo evaluado", total]];
+    let mask = analisis.map(()=>true);
+    const applyStage=(col,label)=>{ mask = analisis.map((r,i)=> mask[i] && pasa(r,col));
+      stages.push([label, mask.filter(Boolean).length]); };
+    if(cols.includes("Subsidiaria")) applyStage("Subsidiaria","Empresas independientes");
+    const infoCol = cols.find(c=> c.includes("nformacion Insuficiente")||c.includes("nformación Insuficiente"));
+    if(infoCol) applyStage(infoCol,"Con información suficiente");
+    const brutoCol = cols.find(c=> c.includes("Resultado Bruto"));
+    if(brutoCol) applyStage(brutoCol,"Sin pérdidas brutas recurrentes");
+    const intensCols = cols.filter(c=> c.includes(">") && c.includes("%"));
+    if(intensCols.length){ intensCols.forEach(c=>{ mask = analisis.map((r,i)=> mask[i] && pasa(r,c)); });
+      stages.push(["Pasan filtros de intensidad", mask.filter(Boolean).length]); }
+    let nAcc=0;
+    if(mrRows){ nAcc = mrRows.filter(r=> ["si","sí","s","yes"].includes(String(r["Aceptada (Si/No)"]||"").trim().toLowerCase())).length; }
+    stages.push(["Aceptadas (revisión cualitativa)", nAcc]);
+    return stages;
+  }
+  function limpiarTexto(v){ if(v==null) return ""; const s=String(v).trim();
+    return ["nan","none","<na>","null"].includes(s.toLowerCase())?"":s; }
+  function limpiarRazon(v){ let s=limpiarTexto(v); const low=s.toLowerCase();
+    if(low.startsWith("no -")) return s.slice(4).trim();
+    if(low.startsWith("no-")) return s.slice(3).trim();
+    if(low==="no") return "Rechazada en revisión cualitativa";
+    return s; }
+
+  function rechazos(analisis, mrRows, embudoPng){
+    const children=[];
+    const stages = construirEmbudo(analisis, mrRows);
+    if(stages.length>=2 && embudoPng){
+      children.push(new Paragraph({children:[run("PROCESO DE SELECCIÓN DE COMPARABLES",{bold:true,size:12})]}));
+      children.push(new Paragraph({alignment:AlignmentType.CENTER, children:[
+        new ImageRun({ data:embudoPng, transformation:{ width:567, height:Math.round(567*(0.74*stages.length+0.8)/9) } }) ]}));
+      const uni=stages[0][1], fin=stages[stages.length-1][1];
+      const nt = `De un universo de ${uni.toLocaleString('es-AR')} empresas evaluadas se seleccionaron ${fin.toLocaleString('es-AR')} comparables tras aplicar los filtros cuantitativos y la revisión cualitativa.`;
+      children.push(new Paragraph({children:[new TextRun({text:nt,italics:true,size:hp(9),font:ARIAL})]}));
+      children.push(new Paragraph({children:[new TextRun("")]}));
+    }
+    // Tabla 1: rechazos cuantitativos
+    children.push(new Paragraph({children:[run("EMPRESAS RECHAZADAS POR FILTROS CUANTITATIVOS",{bold:true,size:12})]}));
+    children.push(new Paragraph({children:[new TextRun("")]}));
+    const rech = (analisis||[]).filter(r=> String(r["Resultado"]||"").trim().toUpperCase()==="NO PASA");
+    const hdr = t => cell(para(t,{bold:true,size:10,color:"FFFFFF"}),{fill:NAVY,borders:bord('single','single')});
+    if(rech.length){
+      const rows=[ new TableRow({children:[hdr("Empresa"),hdr("RIC"),hdr("Razón de Rechazo")]}) ];
+      rech.forEach(r=>{
+        const nombre=limpiarTexto(r["Empresa"]), ric=limpiarTexto(r["RIC"]);
+        rows.push(new TableRow({children:[
+          cell(para(nombre||ric,{size:9}),{widthPct:42,borders:bord(null,'single')}),
+          cell(para(ric,{size:9}),{widthPct:17,borders:bord(null,'single')}),
+          cell(para(limpiarRazon(r["Razon de Rechazo"]),{size:9}),{widthPct:41,borders:bord(null,'single')}) ]}));
+      });
+      children.push(tbl(rows,{grid:true}));
+    } else {
+      children.push(para("No hubo rechazos por filtros cuantitativos."));
+    }
+    return doc(children);
+  }
+
+  /* ---------- empaquetado ---------- */
+  async function toBlob(document){ return await Packer.toBlob(document); }
+  async function toBuffer(document){ return await Packer.toBuffer(document); }
+
+  const API = { fmtNum, fmtPct, estadosFinancieros, testedParty, descripcion,
+    listado, rechazos, construirEmbudo, toBlob, toBuffer };
+  if(typeof module!=='undefined' && module.exports) module.exports = API;
+  else root.WordGen = API;
+})(typeof window!=='undefined'? window : globalThis);
+</script>
+<style>
+  :root{
+    --paper:#F5F6F4; --panel:#FFFFFF; --ink:#1A1D1A; --ink-soft:#585C54;
+    --line:#E4E6E0; --line-strong:#D2D5CC;
+    --in:#0E7C5A; --in-fill:rgba(14,124,90,.12); --in-tint:#E7F1EC;
+    --out:#B45309; --out-fill:rgba(180,83,9,.12);
+    --neutral:#3B6EA5;
+    --shadow:0 1px 2px rgba(20,24,18,.04), 0 8px 30px rgba(20,24,18,.05);
+    --r:14px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#15171A; --panel:#1D2024; --ink:#ECEEE9; --ink-soft:#9BA097;
+      --line:#2A2E30; --line-strong:#373B3D;
+      --in:#3FC492; --in-fill:rgba(63,196,146,.16); --in-tint:#1B2A25;
+      --out:#E29245; --out-fill:rgba(226,146,69,.16);
+      --neutral:#6EA3D6;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 34px rgba(0,0,0,.34);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#15171A; --panel:#1D2024; --ink:#ECEEE9; --ink-soft:#9BA097;
+    --line:#2A2E30; --line-strong:#373B3D;
+    --in:#3FC492; --in-fill:rgba(63,196,146,.16); --in-tint:#1B2A25;
+    --out:#E29245; --out-fill:rgba(226,146,69,.16); --neutral:#6EA3D6;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 34px rgba(0,0,0,.34);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%; scroll-padding-top:env(safe-area-inset-top,0)}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+    font-feature-settings:"tnum" 1,"cv05" 1; font-size:15px; line-height:1.5;
+    padding-top:env(safe-area-inset-top,0); padding-bottom:env(safe-area-inset-bottom,0);
+    -webkit-font-smoothing:antialiased;
+  }
+  .num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+  a{color:inherit}
+  button{font-family:inherit}
+  :focus-visible{outline:2px solid var(--in); outline-offset:2px; border-radius:6px}
+
+  /* ---------- header ---------- */
+  header{
+    display:flex; align-items:baseline; gap:16px; flex-wrap:wrap;
+    padding:22px max(clamp(18px,5vw,56px), calc(50% - 484px)) 20px;
+    border-bottom:1px solid var(--line);
+  }
+  .wm{
+    font-family:"Bricolage Grotesque",sans-serif; font-weight:700;
+    font-size:26px; letter-spacing:-.02em; line-height:1;
+  }
+  .wm b{color:var(--in); font-weight:700}
+  .tag{color:var(--ink-soft); font-size:13.5px; margin-left:2px}
+  .header-spacer{flex:1}
+  .ghost{
+    background:transparent; border:1px solid var(--line-strong); color:var(--ink-soft);
+    font-size:13px; padding:7px 13px; border-radius:9px; cursor:pointer; transition:border-color .15s,color .15s;
+  }
+  .ghost:hover{border-color:var(--ink-soft); color:var(--ink)}
+
+  main{max-width:1080px; margin:0 auto; padding:clamp(22px,4vw,44px) clamp(18px,5vw,56px) 80px}
+
+  /* ---------- intro ---------- */
+  .lede{max-width:60ch; margin:0 0 30px}
+  .lede h1{
+    font-family:"Bricolage Grotesque",sans-serif; font-weight:600;
+    font-size:clamp(28px,4.6vw,40px); line-height:1.06; letter-spacing:-.025em; margin:0 0 12px;
+  }
+  .lede p{color:var(--ink-soft); font-size:16px; margin:0}
+
+  /* ---------- drop zone ---------- */
+  .drop{
+    position:relative; background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--r); padding:clamp(26px,4vw,44px); box-shadow:var(--shadow);
+    overflow:hidden;
+  }
+  .drop.drag{border-color:var(--in); background:var(--in-tint)}
+  .drop-motif{position:absolute; inset:auto -40px -46px auto; width:min(70%,460px); opacity:.5; pointer-events:none}
+  .drop-inner{position:relative; display:flex; flex-direction:column; gap:6px; max-width:52ch}
+  .drop h2{font-family:"Bricolage Grotesque",sans-serif; font-weight:600; font-size:20px; margin:0 0 2px; letter-spacing:-.01em}
+  .drop p{color:var(--ink-soft); margin:0 0 18px; font-size:15px}
+  .drop-actions{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+  .btn{
+    background:var(--ink); color:var(--paper); border:none; cursor:pointer;
+    font-size:14.5px; font-weight:500; padding:11px 20px; border-radius:10px; transition:transform .12s, opacity .15s;
+  }
+  .btn:hover{opacity:.9} .btn:active{transform:translateY(1px)}
+  .linklike{background:none; border:none; color:var(--in); cursor:pointer; font-size:14px; font-weight:500; padding:6px 2px; text-decoration:underline; text-underline-offset:3px; text-decoration-thickness:1px}
+  .hint{color:var(--ink-soft); font-size:12.5px; margin-top:14px}
+  .hint code{font-family:"Bricolage Grotesque",monospace; background:var(--paper); border:1px solid var(--line); padding:1px 6px; border-radius:5px; font-size:12px}
+
+  /* ---------- error ---------- */
+  .err{display:none; margin-top:16px; border-left:3px solid var(--out); background:var(--out-fill); padding:12px 15px; border-radius:0 8px 8px 0; font-size:14px}
+  .err.show{display:block}
+  .err b{font-weight:600}
+
+  /* ---------- result ---------- */
+  .result{display:none; margin-top:6px}
+  .result.show{display:block; animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+  @keyframes rise{from{opacity:0; transform:translateY(10px)} to{opacity:1; transform:none}}
+  @media (prefers-reduced-motion:reduce){ .result.show{animation:none} .bar-iqr{transition:none !important} }
+
+  .result-top{display:flex; align-items:flex-end; justify-content:space-between; gap:20px; flex-wrap:wrap; margin-bottom:6px}
+  .pli-name{font-family:"Bricolage Grotesque",sans-serif; font-weight:600; font-size:clamp(21px,3vw,27px); letter-spacing:-.02em; margin:0}
+  .pli-sub{color:var(--ink-soft); font-size:13.5px; margin-top:3px}
+  .nchip{font-size:13px; color:var(--ink-soft); border:1px solid var(--line-strong); padding:5px 11px; border-radius:20px; white-space:nowrap}
+  .nchip b{color:var(--ink); font-weight:600}
+
+  .stats{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:var(--r); overflow:hidden; margin:20px 0 4px}
+  .stat{background:var(--panel); padding:18px 20px}
+  .stat-mid{background:var(--in-tint)}
+  .stat-k{font-size:12.5px; color:var(--ink-soft); margin-bottom:5px}
+  .stat-v{font-family:"Bricolage Grotesque",sans-serif; font-weight:600; font-size:clamp(26px,4vw,34px); letter-spacing:-.02em}
+  .stat-mid .stat-v{color:var(--in)}
+
+  /* range bar */
+  .bar-wrap{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:34px 30px 26px; margin:16px 0; box-shadow:var(--shadow)}
+  .bar{position:relative; height:56px}
+  .bar-axis{position:absolute; left:0; right:0; top:50%; height:2px; background:var(--line-strong); transform:translateY(-50%)}
+  .bar-whisker{position:absolute; top:50%; height:2px; background:var(--ink-soft); transform:translateY(-50%)}
+  .bar-cap{position:absolute; top:50%; width:2px; height:16px; background:var(--ink-soft); transform:translateY(-50%)}
+  .bar-iqr{position:absolute; top:50%; height:44px; background:var(--in-fill); border:1.5px solid var(--in); border-radius:8px; transform:translateY(-50%); transition:width .55s cubic-bezier(.2,.7,.2,1), left .55s cubic-bezier(.2,.7,.2,1)}
+  .bar-med{position:absolute; top:50%; width:2.5px; height:44px; background:var(--in); transform:translate(-50%,-50%)}
+  .bar-tick{position:absolute; top:calc(50% + 32px); transform:translateX(-50%); font-size:12px; color:var(--ink-soft); white-space:nowrap}
+  .bar-tick.edge{color:var(--ink-soft)}
+  .bar-needle{position:absolute; top:calc(50% - 34px); height:78px; width:2px; background:var(--out); transform:translateX(-50%); display:none}
+  .bar-needle.in{background:var(--in)}
+  .bar-needle.show{display:block}
+  .bar-needle::after{content:attr(data-label); position:absolute; top:-20px; left:50%; transform:translateX(-50%); font-size:11.5px; font-weight:600; color:#fff; background:var(--out); padding:2px 7px; border-radius:5px; white-space:nowrap}
+  .bar-needle.in::after{background:var(--in)}
+
+  .ends{display:flex; justify-content:space-between; color:var(--ink-soft); font-size:12.5px; margin-top:14px}
+  .ends b{color:var(--ink); font-weight:600}
+
+  /* tested party */
+  .tp{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:20px 22px; margin:16px 0; box-shadow:var(--shadow)}
+  .tp h3{font-family:"Bricolage Grotesque",sans-serif; font-weight:600; font-size:16px; margin:0 0 4px}
+  .tp p{color:var(--ink-soft); font-size:13.5px; margin:0 0 14px}
+  .tp-row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .field{display:flex; align-items:center; border:1px solid var(--line-strong); border-radius:10px; overflow:hidden; background:var(--paper)}
+  .field input{border:none; background:transparent; color:var(--ink); font:inherit; font-variant-numeric:tabular-nums; padding:10px 4px 10px 13px; width:88px; outline:none}
+  .field span{color:var(--ink-soft); padding:0 12px 0 2px}
+  .verdict{display:none; align-items:center; gap:9px; padding:9px 15px; border-radius:10px; font-size:14px; font-weight:500}
+  .verdict.show{display:inline-flex}
+  .verdict.in{background:var(--in-fill); color:var(--in)}
+  .verdict.out{background:var(--out-fill); color:var(--out)}
+  .verdict .dot{width:8px; height:8px; border-radius:50%; background:currentColor}
+  .verdict small{font-weight:400; color:var(--ink-soft); margin-left:2px}
+
+  /* config + table */
+  .grid{display:grid; grid-template-columns:1fr 300px; gap:16px; align-items:start; margin-top:16px}
+  @media (max-width:820px){ .grid{grid-template-columns:1fr} .stats{grid-template-columns:1fr} }
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); box-shadow:var(--shadow)}
+  .card-h{padding:16px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between}
+  .card-h h3{font-family:"Bricolage Grotesque",sans-serif; font-weight:600; font-size:16px; margin:0}
+  .card-h .muted{color:var(--ink-soft); font-size:13px}
+  .tbl-scroll{overflow-x:auto}
+  table{border-collapse:collapse; width:100%; font-size:13.5px}
+  th,td{padding:9px 14px; text-align:right; white-space:nowrap}
+  th:first-child,td:first-child{text-align:left; position:sticky; left:0; background:var(--panel)}
+  thead th{color:var(--ink-soft); font-weight:500; font-size:12px; border-bottom:1px solid var(--line); cursor:pointer; user-select:none}
+  thead th.avg{color:var(--ink)}
+  tbody td{border-bottom:1px solid var(--line)}
+  tbody td.avg{font-weight:600; font-variant-numeric:tabular-nums}
+  tbody tr:hover td{background:var(--in-tint)}
+  tbody tr:hover td:first-child{background:var(--in-tint)}
+  td.num,th.num{font-variant-numeric:tabular-nums}
+
+  .cfg{padding:18px 20px; display:flex; flex-direction:column; gap:16px}
+  .cfg label{font-size:12.5px; color:var(--ink-soft); display:block; margin-bottom:6px}
+  select{width:100%; font:inherit; padding:10px 12px; border:1px solid var(--line-strong); border-radius:10px; background:var(--paper); color:var(--ink); cursor:pointer}
+  .yrs{display:flex; gap:6px}
+  .yrs button{flex:1; padding:9px 0; border:1px solid var(--line-strong); background:var(--paper); color:var(--ink-soft); border-radius:9px; cursor:pointer; font-size:14px; font-variant-numeric:tabular-nums}
+  .yrs button.on{background:var(--ink); color:var(--paper); border-color:var(--ink)}
+  .cfg .btn{width:100%; text-align:center}
+  .cfg .reset{background:none; border:1px solid var(--line-strong); color:var(--ink-soft); font-size:13px; padding:9px; border-radius:10px; cursor:pointer; width:100%}
+
+  /* ajuste de patrimoniales */
+  .adj{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); margin:16px 0; box-shadow:var(--shadow); overflow:hidden}
+  .adj-head{display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 22px}
+  .adj-head h3{font-family:"Bricolage Grotesque",sans-serif; font-weight:600; font-size:17px; margin:0}
+  .adj-sub{color:var(--ink-soft); font-size:13px; margin:3px 0 0; max-width:60ch}
+  .switch{display:inline-flex; align-items:center; gap:9px; cursor:pointer; user-select:none; white-space:nowrap}
+  .switch input{position:absolute; opacity:0; width:0; height:0}
+  .switch .track{width:40px; height:23px; border-radius:20px; background:var(--line-strong); position:relative; transition:background .2s}
+  .switch .track::after{content:""; position:absolute; top:2px; left:2px; width:19px; height:19px; border-radius:50%; background:#fff; transition:transform .2s; box-shadow:0 1px 3px rgba(0,0,0,.25)}
+  .switch input:checked + .track{background:var(--in)}
+  .switch input:checked + .track::after{transform:translateX(17px)}
+  .switch .lbl{font-size:13.5px; color:var(--ink-soft)}
+  .adj-body{padding:0 22px 22px; border-top:1px solid var(--line)}
+  .adj-opts{padding:16px 0 4px}
+  .chk{display:inline-flex; align-items:center; gap:9px; font-size:14px; color:var(--ink); cursor:pointer}
+  .chk input{width:16px; height:16px; accent-color:var(--in)}
+  .adj-note{background:var(--out-fill); border-left:3px solid var(--out); padding:11px 14px; border-radius:0 8px 8px 0; font-size:13.5px; margin:12px 0}
+  .tp-grid-scroll{overflow-x:auto; margin-top:12px}
+  .tp-grid{border-collapse:collapse; font-size:13px; min-width:640px}
+  .tp-grid th,.tp-grid td{padding:7px 10px; text-align:right; border-bottom:1px solid var(--line)}
+  .tp-grid th:first-child,.tp-grid td:first-child{text-align:left; color:var(--ink-soft)}
+  .tp-grid thead th{color:var(--ink-soft); font-weight:500; font-size:11.5px; white-space:nowrap}
+  .tp-grid input{width:82px; font:inherit; font-variant-numeric:tabular-nums; text-align:right; padding:6px 8px; border:1px solid var(--line-strong); border-radius:7px; background:var(--paper); color:var(--ink)}
+  .adj-result{margin-top:20px; padding-top:18px; border-top:1px solid var(--line)}
+  .dual{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  @media(max-width:640px){ .dual{grid-template-columns:1fr} }
+  .dual-col{border:1px solid var(--line); border-radius:11px; padding:13px 16px}
+  .dual-col.binding{border-color:var(--in); background:var(--in-tint)}
+  .dual-k{font-size:12px; color:var(--ink-soft); margin-bottom:6px; display:flex; align-items:center; gap:8px}
+  .dual-v{font-size:17px; font-variant-numeric:tabular-nums}
+  .dual-v .strong{font-weight:600}
+  .dual-v .sep{color:var(--ink-soft); margin:0 3px}
+  .binding .strong{color:var(--in)}
+  .pill{font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--in); border:1px solid var(--in); border-radius:20px; padding:1px 8px}
+  .bi{margin-top:18px; padding:16px 18px; border:1px solid var(--out); background:var(--out-fill); border-radius:12px}
+  .bi h4{font-family:"Bricolage Grotesque",sans-serif; font-weight:600; font-size:15px; margin:0 0 4px; color:var(--out)}
+  .bi p{font-size:13.5px; color:var(--ink); margin:0 0 14px}
+  .bi-row{display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:14px}
+  .seg{display:inline-flex; border:1px solid var(--line-strong); border-radius:9px; overflow:hidden}
+  .seg button{background:var(--panel); border:none; padding:8px 13px; font-size:13px; color:var(--ink-soft); cursor:pointer}
+  .seg button.on{background:var(--ink); color:var(--paper)}
+  .alic{font-size:13px; color:var(--ink-soft); display:inline-flex; align-items:center; gap:8px}
+  .alic select{font:inherit; padding:7px 10px; border:1px solid var(--line-strong); border-radius:8px; background:var(--paper); color:var(--ink)}
+  .bi-out{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  @media(max-width:640px){ .bi-out{grid-template-columns:1fr} }
+  .bi-stat{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 15px}
+  .bi-k{font-size:12px; color:var(--ink-soft); margin-bottom:4px}
+  .bi-v{font-family:"Bricolage Grotesque",sans-serif; font-weight:600; font-size:22px}
+
+  /* informes word */
+  .wcard{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); margin:16px 0; padding:18px 22px 22px; box-shadow:var(--shadow)}
+  .wgrid{margin-top:12px}
+  .wname{display:block; font-size:12.5px; color:var(--ink-soft); margin-bottom:16px}
+  .wname input{display:block; margin-top:6px; width:min(360px,100%); font:inherit; padding:9px 12px; border:1px solid var(--line-strong); border-radius:8px; background:var(--paper); color:var(--ink)}
+  .wbtns{display:flex; flex-wrap:wrap; gap:9px}
+  .wbtn{font:inherit; font-size:13px; padding:10px 14px; border:1px solid var(--line-strong); border-radius:9px; background:var(--paper); color:var(--ink); cursor:pointer; transition:border-color .15s, background .15s}
+  .wbtn:hover{border-color:var(--in); background:var(--in-tint)}
+  .wbtn.wall{background:var(--ink); color:var(--paper); border-color:var(--ink); font-weight:500}
+  .wbtn:disabled{opacity:.5; cursor:wait}
+  .wnote{margin-top:14px; font-size:13px; padding:10px 14px; border-radius:8px; background:var(--in-tint); border-left:3px solid var(--in); color:var(--ink)}
+  .wnote.err{background:var(--out-fill); border-left-color:var(--out)}
+
+  footer{max-width:1080px; margin:0 auto; padding:0 clamp(18px,5vw,56px) 40px; color:var(--ink-soft); font-size:12.5px}  footer span{color:var(--in)}
+</style>
+</head>
+<body>
+<header>
+  <div class="wm">compar<b>.ar</b></div>
+  <span class="tag">rango de tus comparables</span>
+  <div class="header-spacer"></div>
+  <button class="ghost" id="newFile" style="display:none">Otro archivo</button>
+</header>
+
+<main>
+  <div class="lede" id="lede">
+    <h1>Motor de búsqueda interno — versión 1</h1>
+    <p>Si ya aceptaste y rechazaste a las empresas de la hoja MR, subí todo ese Excel acá para calcular los rangos no ajustados y (si aplica) ajustados también, junto a sus anexos de financieros y rechazos.</p>
+  </div>
+
+  <!-- Drop zone -->
+  <section class="drop" id="drop">
+    <svg class="drop-motif" viewBox="0 0 460 120" fill="none" aria-hidden="true">
+      <line x1="20" y1="60" x2="440" y2="60" stroke="var(--line-strong)" stroke-width="2"/>
+      <rect x="150" y="38" width="170" height="44" rx="8" fill="var(--in-fill)" stroke="var(--in)" stroke-width="1.5"/>
+      <line x1="228" y1="38" x2="228" y2="82" stroke="var(--in)" stroke-width="2.5"/>
+      <line x1="20" y1="52" x2="20" y2="68" stroke="var(--ink-soft)" stroke-width="2"/>
+      <line x1="440" y1="52" x2="440" y2="68" stroke="var(--ink-soft)" stroke-width="2"/>
+    </svg>
+    <div class="drop-inner">
+      <h2>El archivo pipeline_output generado en la etapa 1, arrastralo acá.</h2>
+      <p>El archivo que devuelve el Modo 1, con la columna Aceptada (Si/No) ya completada en la hoja MR.</p>
+      <div class="drop-actions">
+        <button class="btn" id="pick">Elegir archivo</button>
+        <button class="linklike" id="sample">Probar con datos de ejemplo</button>
+      </div>
+      <div class="hint">Formato <code>.xlsx</code> · se procesa en tu equipo, no se sube a ningún servidor.</div>
+      <input type="file" id="file" accept=".xlsx,.xls" hidden>
+    </div>
+    <div class="err" id="err"></div>
+  </section>
+
+  <!-- Result -->
+  <section class="result" id="result">
+    <div class="result-top">
+      <div>
+        <h2 class="pli-name" id="pliName">—</h2>
+        <div class="pli-sub" id="pliSub"></div>
+      </div>
+      <span class="nchip">n = <b id="nComp">0</b> comparables</span>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-k">Cuartil inferior (Q1)</div><div class="stat-v num" id="vQ1">—</div></div>
+      <div class="stat stat-mid"><div class="stat-k">Mediana</div><div class="stat-v num" id="vMed">—</div></div>
+      <div class="stat"><div class="stat-k">Cuartil superior (Q3)</div><div class="stat-v num" id="vQ3">—</div></div>
+    </div>
+
+    <div class="bar-wrap">
+      <div class="bar" id="bar">
+        <div class="bar-axis"></div>
+        <div class="bar-whisker" id="whisk"></div>
+        <div class="bar-cap" id="capMin"></div>
+        <div class="bar-cap" id="capMax"></div>
+        <div class="bar-iqr" id="iqr"></div>
+        <div class="bar-med" id="med"></div>
+        <div class="bar-needle" id="needle" data-label=""></div>
+      </div>
+      <div class="ends"><span>mínimo <b class="num" id="eMin">—</b></span><span>máximo <b class="num" id="eMax">—</b></span></div>
+    </div>
+
+    <div class="tp">
+      <h3>Ubicar la empresa analizada</h3>
+      <p>Ingresá el indicador de la tested party (en %) y compar.ar te dice dónde cae respecto del rango.</p>
+      <div class="tp-row">
+        <div class="field"><input type="text" id="tpVal" inputmode="decimal" placeholder="8,0" aria-label="Indicador de la empresa analizada"><span>%</span></div>
+        <button class="btn" id="tpGo">Ubicar</button>
+        <div class="verdict" id="verdict"><span class="dot"></span><span id="verdictTxt"></span></div>
+      </div>
+    </div>
+
+    <!-- Ajuste de patrimoniales -->
+    <div class="adj" id="adjCard">
+      <div class="adj-head">
+        <div>
+          <h3>Ajuste de patrimoniales</h3>
+          <p class="adj-sub">Ajuste por capital de trabajo (cuentas a cobrar, a pagar e inventarios) sobre cada comparable.</p>
+        </div>
+        <label class="switch"><input type="checkbox" id="adjOn"><span class="track"></span><span class="lbl">Aplicar</span></label>
+      </div>
+      <div class="adj-body" id="adjBody" hidden>
+        <div class="adj-opts">
+          <label class="chk"><input type="checkbox" id="esServ"> La empresa presta únicamente servicios (sin inventarios)</label>
+        </div>
+        <div class="adj-note" id="adjNoData" hidden>Este archivo no trae la hoja <b>Data</b> con los financieros crudos, así que no puedo calcular el ajuste. Subí el Excel completo del Modo 1.</div>
+        <div id="adjInputs">
+          <div class="tp-grid-scroll"><table class="tp-grid" id="tpGrid"><thead></thead><tbody></tbody></table></div>
+          <button class="btn" id="adjGo" style="margin-top:14px">Calcular rango ajustado</button>
+        </div>
+
+        <div class="adj-result" id="adjResult" hidden>
+          <div class="dual">
+            <div class="dual-col">
+              <div class="dual-k">Rango sin ajustar</div>
+              <div class="dual-v"><span class="num" id="uQ1">—</span> <span class="sep">·</span> <span class="num strong" id="uMed">—</span> <span class="sep">·</span> <span class="num" id="uQ3">—</span></div>
+            </div>
+            <div class="dual-col binding">
+              <div class="dual-k">Rango ajustado <span class="pill">vinculante</span></div>
+              <div class="dual-v"><span class="num" id="aQ1">—</span> <span class="sep">·</span> <span class="num strong" id="aMed">—</span> <span class="sep">·</span> <span class="num" id="aQ3">—</span></div>
+            </div>
+          </div>
+          <div class="bar-wrap" style="margin:14px 0 0">
+            <div class="bar" id="barA">
+              <div class="bar-axis"></div><div class="bar-whisker" id="whiskA"></div>
+              <div class="bar-cap" id="capMinA"></div><div class="bar-cap" id="capMaxA"></div>
+              <div class="bar-iqr" id="iqrA"></div><div class="bar-med" id="medA"></div>
+              <div class="bar-needle" id="needleA" data-label=""></div>
+            </div>
+            <div class="ends"><span>mínimo <b class="num" id="eMinA">—</b></span><span>máximo <b class="num" id="eMaxA">—</b></span></div>
+          </div>
+          <div class="verdict" id="verdictA" style="margin-top:14px"><span class="dot"></span><span id="verdictTxtA"></span></div>
+
+          <div class="bi" id="biBox" hidden>
+            <h4>Ajuste de base imponible</h4>
+            <p>La empresa analizada cae por debajo del rango ajustado. Para llevar su indicador a la mediana:</p>
+            <div class="bi-row">
+              <div class="seg" id="viaSeg">
+                <button data-via="costos" class="on">Vía costos (importador)</button>
+                <button data-via="ingresos">Vía ingresos (exportador)</button>
+              </div>
+              <label class="alic">Alícuota Ganancias
+                <select id="alic"><option value="0.35">35%</option><option value="0.30">30%</option><option value="0.25">25%</option></select>
+              </label>
+            </div>
+            <div class="bi-out">
+              <div class="bi-stat"><div class="bi-k">Ajuste a la base imponible</div><div class="bi-v num" id="biAjuste">—</div></div>
+              <div class="bi-stat"><div class="bi-k">Impuesto resultante</div><div class="bi-v num" id="biImp">—</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-h"><h3>Comparables</h3><span class="muted" id="tblYears"></span></div>
+        <div class="tbl-scroll"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3>Ajustes</h3></div>
+        <div class="cfg">
+          <div><label for="pliSel">Indicador (PLI)</label><select id="pliSel"></select></div>
+          <div><label>Años del promedio</label><div class="yrs" id="yrs"></div></div>
+          <button class="btn" id="dl">Descargar Excel</button>
+          <button class="reset" id="reset">Cargar otro archivo</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Informes Word -->
+    <div class="wcard" id="wordCard">
+      <div class="card-h"><h3>Informes Word</h3><span class="muted" id="wordHint"></span></div>
+      <div class="wgrid">
+        <label class="wname">Nombre de la parte analizada
+          <input type="text" id="tpName" placeholder="Cliente Ejemplo S.A." value="">
+        </label>
+        <div class="wbtns">
+          <button class="wbtn" data-doc="tested">Financiero de la parte analizada</button>
+          <button class="wbtn" data-doc="fin">Estados financieros comparables</button>
+          <button class="wbtn" data-doc="listado">Listado de aceptadas</button>
+          <button class="wbtn" data-doc="desc">Descripción de aceptadas</button>
+          <button class="wbtn" data-doc="rech">Razones de rechazo (con embudo)</button>
+          <button class="wbtn wall" data-doc="all">Descargar los cinco</button>
+        </div>
+      </div>
+      <div class="wnote" id="wordNote" hidden></div>
+    </div>
+
+  </section>
+</main>
+
+<footer>compar.ar te genera el análisis económico para tus informes. Esta es su versión niña, pronto nuevas actualizaciones. Favor no compartir, mantener uso de forma interna a la empresa.</footer>
+
+<script>
+const SAMPLE = {"plis":{"Margen Operativo / Ventas":["2022","2023","2024"]},"rows":[{"ric":"COMP000.OQ","empresa":"Comparable 0 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.319776,"2023":0.213144,"2024":0.262525}},"fin":{"2022":{"V":1376.9,"C":762.7,"S":173.9,"AR":337.3,"AP":134.0,"INV":124.0,"TA":1115.6,"INT":81.6},"2023":{"V":3522.5,"C":2451.6,"S":320.1,"AR":982.0,"AP":623.4,"INV":264.9,"TA":4599.9,"INT":14.1},"2024":{"V":1812.4,"C":1054.1,"S":282.5,"AR":477.8,"AP":170.8,"INV":141.5,"TA":1611.8,"INT":20.3}}},{"ric":"COMP001.OQ","empresa":"Comparable 1 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.310907,"2023":0.278415,"2024":0.121472}},"fin":{"2022":{"V":2718.5,"C":1525.4,"S":347.9,"AR":490.2,"AP":385.4,"INV":308.2,"TA":3484.2,"INT":288.7},"2023":{"V":3957.4,"C":2444.1,"S":411.5,"AR":1026.1,"AP":272.4,"INV":347.0,"TA":3387.6,"INT":162.3},"2024":{"V":1728.8,"C":1224.0,"S":294.8,"AR":446.9,"AP":246.2,"INV":226.1,"TA":1883.0,"INT":47.7}}},{"ric":"COMP002.OQ","empresa":"Comparable 2 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.355358,"2023":0.132255,"2024":0.241959}},"fin":{"2022":{"V":3145.0,"C":1769.3,"S":258.1,"AR":799.2,"AP":272.5,"INV":352.4,"TA":4364.4,"INT":610.7},"2023":{"V":1947.0,"C":1384.9,"S":304.6,"AR":448.8,"AP":340.6,"INV":262.0,"TA":3048.9,"INT":152.7},"2024":{"V":3839.5,"C":2368.5,"S":542.0,"AR":664.7,"AP":433.6,"INV":219.7,"TA":3131.0,"INT":356.8}}},{"ric":"COMP003.OQ","empresa":"Comparable 3 Inc","accepted":false,"vals":{"Margen Operativo / Ventas":{"2022":0.180122,"2023":0.211462,"2024":0.284579}},"fin":{"2022":{"V":2793.1,"C":1949.6,"S":340.4,"AR":484.7,"AP":254.3,"INV":419.1,"TA":4095.9,"INT":451.1},"2023":{"V":2873.8,"C":1980.7,"S":285.4,"AR":728.6,"AP":317.2,"INV":305.9,"TA":3032.1,"INT":258.5},"2024":{"V":2641.8,"C":1621.1,"S":268.9,"AR":710.6,"AP":250.3,"INV":250.5,"TA":2306.6,"INT":104.1}}},{"ric":"COMP004.OQ","empresa":"Comparable 4 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.130744,"2023":0.258316,"2024":0.162748}},"fin":{"2022":{"V":1899.9,"C":1314.5,"S":337.0,"AR":427.6,"AP":195.2,"INV":251.9,"TA":2472.9,"INT":306.3},"2023":{"V":3715.6,"C":2352.3,"S":403.5,"AR":757.2,"AP":625.8,"INV":477.7,"TA":4440.6,"INT":331.4},"2024":{"V":2232.9,"C":1474.0,"S":395.5,"AR":639.7,"AP":370.5,"INV":149.8,"TA":2780.4,"INT":152.8}}},{"ric":"COMP005.OQ","empresa":"Comparable 5 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.159996,"2023":0.215123,"2024":0.185572}},"fin":{"2022":{"V":1803.8,"C":1327.9,"S":187.3,"AR":332.0,"AP":362.2,"INV":240.7,"TA":2788.2,"INT":225.4},"2023":{"V":3081.5,"C":2016.3,"S":402.3,"AR":392.3,"AP":254.2,"INV":479.9,"TA":4822.1,"INT":698.7},"2024":{"V":946.8,"C":625.6,"S":145.5,"AR":217.4,"AP":68.5,"INV":74.8,"TA":1292.1,"INT":10.7}}},{"ric":"COMP006.OQ","empresa":"Comparable 6 Inc","accepted":false,"vals":{"Margen Operativo / Ventas":{"2022":0.315024,"2023":0.216038,"2024":0.108965}},"fin":{"2022":{"V":3965.1,"C":2377.3,"S":338.7,"AR":1173.4,"AP":566.0,"INV":373.7,"TA":4689.1,"INT":643.9},"2023":{"V":970.2,"C":652.7,"S":107.9,"AR":229.3,"AP":176.6,"INV":92.2,"TA":967.9,"INT":7.7},"2024":{"V":1050.8,"C":778.0,"S":158.3,"AR":296.6,"AP":191.9,"INV":87.5,"TA":988.5,"INT":142.5}}},{"ric":"COMP007.OQ","empresa":"Comparable 7 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.305946,"2023":0.278947,"2024":0.162526}},"fin":{"2022":{"V":3330.0,"C":1945.2,"S":366.0,"AR":781.5,"AP":281.5,"INV":404.2,"TA":5006.3,"INT":240.6},"2023":{"V":888.7,"C":563.9,"S":76.9,"AR":191.0,"AP":126.2,"INV":99.6,"TA":1140.2,"INT":102.6},"2024":{"V":2499.3,"C":1805.2,"S":287.9,"AR":320.2,"AP":252.6,"INV":387.9,"TA":2458.7,"INT":284.9}}},{"ric":"COMP008.OQ","empresa":"Comparable 8 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.278993,"2023":0.228282,"2024":0.091603}},"fin":{"2022":{"V":2542.0,"C":1470.9,"S":361.9,"AR":447.1,"AP":387.6,"INV":173.6,"TA":2510.0,"INT":181.6},"2023":{"V":1400.9,"C":875.4,"S":205.7,"AR":271.9,"AP":97.0,"INV":131.8,"TA":1586.7,"INT":106.5},"2024":{"V":1676.8,"C":1241.0,"S":282.2,"AR":483.2,"AP":293.6,"INV":190.8,"TA":2599.0,"INT":117.2}}},{"ric":"COMP009.OQ","empresa":"Comparable 9 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.25681,"2023":0.259033,"2024":0.265889}},"fin":{"2022":{"V":2679.8,"C":1710.1,"S":281.5,"AR":445.1,"AP":368.9,"INV":219.4,"TA":2886.0,"INT":153.3},"2023":{"V":3451.3,"C":2274.9,"S":282.4,"AR":857.0,"AP":433.1,"INV":483.2,"TA":4126.5,"INT":192.4},"2024":{"V":1354.7,"C":820.5,"S":174.0,"AR":368.4,"AP":99.1,"INV":112.9,"TA":1660.6,"INT":169.0}}},{"ric":"COMP010.OQ","empresa":"Comparable 10 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.206907,"2023":0.134776,"2024":0.28674}},"fin":{"2022":{"V":3216.9,"C":2127.6,"S":423.7,"AR":566.7,"AP":333.3,"INV":492.3,"TA":5131.0,"INT":134.9},"2023":{"V":2934.5,"C":2062.7,"S":476.3,"AR":471.0,"AP":283.9,"INV":190.5,"TA":3231.1,"INT":272.6},"2024":{"V":905.7,"C":514.4,"S":131.6,"AR":212.2,"AP":62.9,"INV":49.6,"TA":744.8,"INT":72.5}}},{"ric":"COMP011.OQ","empresa":"Comparable 11 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.224987,"2023":0.2221,"2024":0.153206}},"fin":{"2022":{"V":1571.2,"C":1073.0,"S":144.7,"AR":325.7,"AP":124.9,"INV":97.8,"TA":2097.3,"INT":249.0},"2023":{"V":2086.9,"C":1440.6,"S":182.8,"AR":324.8,"AP":378.8,"INV":347.6,"TA":1733.6,"INT":0.8},"2024":{"V":2246.0,"C":1577.8,"S":324.1,"AR":425.8,"AP":359.4,"INV":288.4,"TA":1825.0,"INT":127.6}}},{"ric":"COMP012.OQ","empresa":"Comparable 12 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.176863,"2023":0.271675,"2024":0.103643}},"fin":{"2022":{"V":3296.9,"C":2245.1,"S":468.7,"AR":868.1,"AP":342.2,"INV":330.0,"TA":4300.9,"INT":529.6},"2023":{"V":1339.1,"C":809.4,"S":165.9,"AR":160.3,"AP":172.5,"INV":188.1,"TA":1437.9,"INT":206.3},"2024":{"V":2514.4,"C":1874.1,"S":379.7,"AR":505.7,"AP":442.0,"INV":300.7,"TA":3463.0,"INT":115.5}}},{"ric":"COMP013.OQ","empresa":"Comparable 13 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.219188,"2023":0.107799,"2024":0.14743}},"fin":{"2022":{"V":2717.3,"C":1779.1,"S":342.6,"AR":335.6,"AP":477.2,"INV":176.1,"TA":4277.0,"INT":204.1},"2023":{"V":3808.0,"C":2826.0,"S":571.5,"AR":1108.3,"AP":371.6,"INV":637.6,"TA":4929.7,"INT":218.6},"2024":{"V":1149.7,"C":814.4,"S":165.8,"AR":139.6,"AP":113.6,"INV":105.5,"TA":1355.5,"INT":46.9}}},{"ric":"COMP014.OQ","empresa":"Comparable 14 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.265255,"2023":0.163086,"2024":0.125674}},"fin":{"2022":{"V":2564.7,"C":1486.0,"S":398.4,"AR":487.6,"AP":257.5,"INV":263.8,"TA":2375.3,"INT":317.6},"2023":{"V":2550.8,"C":1895.2,"S":239.6,"AR":611.6,"AP":522.2,"INV":472.5,"TA":2750.2,"INT":258.1},"2024":{"V":2798.5,"C":2027.7,"S":419.1,"AR":300.5,"AP":328.9,"INV":470.3,"TA":3288.4,"INT":214.1}}},{"ric":"COMP015.OQ","empresa":"Comparable 15 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.19669,"2023":0.263965,"2024":0.237143}},"fin":{"2022":{"V":1311.2,"C":896.6,"S":156.7,"AR":362.4,"AP":96.6,"INV":205.0,"TA":1145.9,"INT":141.6},"2023":{"V":3168.6,"C":2028.5,"S":303.7,"AR":917.7,"AP":437.4,"INV":236.4,"TA":4047.0,"INT":127.3},"2024":{"V":2704.7,"C":1817.7,"S":245.6,"AR":374.6,"AP":331.7,"INV":304.9,"TA":4018.6,"INT":347.6}}},{"ric":"COMP016.OQ","empresa":"Comparable 16 Inc","accepted":false,"vals":{"Margen Operativo / Ventas":{"2022":0.304473,"2023":0.13542,"2024":0.307616}},"fin":{"2022":{"V":1983.1,"C":1165.2,"S":214.1,"AR":208.2,"AP":192.9,"INV":219.1,"TA":2922.3,"INT":102.9},"2023":{"V":3207.8,"C":2207.7,"S":565.7,"AR":692.8,"AP":397.0,"INV":378.1,"TA":2578.5,"INT":2.6},"2024":{"V":2005.1,"C":1156.9,"S":231.4,"AR":457.7,"AP":224.6,"INV":170.5,"TA":2839.3,"INT":22.7}}},{"ric":"COMP017.OQ","empresa":"Comparable 17 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.216938,"2023":0.337721,"2024":0.308538}},"fin":{"2022":{"V":2973.2,"C":1884.7,"S":443.5,"AR":855.8,"AP":410.6,"INV":364.9,"TA":4048.5,"INT":556.1},"2023":{"V":1694.0,"C":939.3,"S":182.6,"AR":292.7,"AP":135.8,"INV":148.2,"TA":2626.4,"INT":74.6},"2024":{"V":3465.7,"C":1997.0,"S":399.4,"AR":728.4,"AP":476.3,"INV":452.3,"TA":3482.3,"INT":497.5}}},{"ric":"COMP018.OQ","empresa":"Comparable 18 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.29448,"2023":0.159812,"2024":0.177761}},"fin":{"2022":{"V":1219.1,"C":709.3,"S":150.8,"AR":319.9,"AP":79.7,"INV":83.0,"TA":1757.2,"INT":217.0},"2023":{"V":979.9,"C":667.1,"S":156.2,"AR":107.7,"AP":129.5,"INV":69.5,"TA":1254.9,"INT":21.2},"2024":{"V":2529.8,"C":1870.5,"S":209.6,"AR":303.3,"AP":255.0,"INV":408.7,"TA":2510.1,"INT":102.4}}},{"ric":"COMP019.OQ","empresa":"Comparable 19 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.266785,"2023":0.153203,"2024":0.330943}},"fin":{"2022":{"V":3541.8,"C":2146.5,"S":450.4,"AR":690.6,"AP":407.7,"INV":334.4,"TA":5114.6,"INT":153.4},"2023":{"V":1219.3,"C":883.1,"S":149.4,"AR":365.3,"AP":193.7,"INV":101.3,"TA":1877.6,"INT":82.7},"2024":{"V":3248.6,"C":1853.8,"S":319.7,"AR":602.1,"AP":305.0,"INV":247.9,"TA":3301.1,"INT":178.5}}},{"ric":"COMP020.OQ","empresa":"Comparable 20 Inc","accepted":false,"vals":{"Margen Operativo / Ventas":{"2022":0.253375,"2023":0.239181,"2024":0.110789}},"fin":{"2022":{"V":2267.0,"C":1454.5,"S":238.1,"AR":312.7,"AP":212.8,"INV":335.3,"TA":3420.9,"INT":87.6},"2023":{"V":2657.4,"C":1755.7,"S":266.1,"AR":298.5,"AP":427.3,"INV":179.2,"TA":2971.0,"INT":339.7},"2024":{"V":2106.7,"C":1495.5,"S":377.8,"AR":412.9,"AP":387.8,"INV":252.1,"TA":2339.7,"INT":347.3}}},{"ric":"COMP021.OQ","empresa":"Comparable 21 Inc","accepted":false,"vals":{"Margen Operativo / Ventas":{"2022":0.223934,"2023":0.186339,"2024":0.123186}},"fin":{"2022":{"V":1233.4,"C":811.8,"S":145.4,"AR":245.6,"AP":191.6,"INV":111.5,"TA":1579.8,"INT":56.5},"2023":{"V":3645.5,"C":2542.3,"S":423.9,"AR":567.4,"AP":530.2,"INV":408.7,"TA":5796.5,"INT":257.4},"2024":{"V":1550.5,"C":1101.3,"S":258.2,"AR":213.6,"AP":198.1,"INV":221.2,"TA":1751.5,"INT":28.2}}},{"ric":"COMP022.OQ","empresa":"Comparable 22 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.327974,"2023":0.142229,"2024":0.086335}},"fin":{"2022":{"V":2357.2,"C":1383.4,"S":200.7,"AR":481.2,"AP":211.1,"INV":301.9,"TA":2182.8,"INT":5.4},"2023":{"V":2136.7,"C":1540.0,"S":292.8,"AR":590.1,"AP":414.1,"INV":145.3,"TA":2186.3,"INT":60.1},"2024":{"V":3023.1,"C":2222.4,"S":539.7,"AR":781.0,"AP":571.9,"INV":533.2,"TA":3892.2,"INT":478.6}}},{"ric":"COMP023.OQ","empresa":"Comparable 23 Inc","accepted":false,"vals":{"Margen Operativo / Ventas":{"2022":0.260103,"2023":0.149947,"2024":0.222682}},"fin":{"2022":{"V":2308.7,"C":1369.9,"S":338.3,"AR":256.5,"AP":213.3,"INV":197.3,"TA":3333.6,"INT":12.0},"2023":{"V":1781.3,"C":1215.8,"S":298.4,"AR":349.3,"AP":306.3,"INV":184.5,"TA":2141.0,"INT":103.1},"2024":{"V":3649.6,"C":2447.0,"S":389.9,"AR":758.2,"AP":423.0,"INV":211.1,"TA":4954.0,"INT":644.9}}},{"ric":"COMP024.OQ","empresa":"Comparable 24 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.265755,"2023":0.321806,"2024":0.20326}},"fin":{"2022":{"V":1272.6,"C":806.7,"S":127.7,"AR":170.6,"AP":123.4,"INV":187.4,"TA":1876.3,"INT":223.4},"2023":{"V":1145.1,"C":680.0,"S":96.6,"AR":115.5,"AP":146.5,"INV":101.6,"TA":1434.2,"INT":186.9},"2024":{"V":1582.7,"C":1130.5,"S":130.5,"AR":451.4,"AP":183.7,"INV":96.9,"TA":1540.8,"INT":18.7}}},{"ric":"COMP025.OQ","empresa":"Comparable 25 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.297842,"2023":0.272571,"2024":0.196117}},"fin":{"2022":{"V":977.7,"C":548.2,"S":138.3,"AR":138.8,"AP":87.8,"INV":117.1,"TA":1114.9,"INT":122.0},"2023":{"V":1219.5,"C":687.3,"S":199.8,"AR":151.7,"AP":78.4,"INV":73.3,"TA":1484.4,"INT":153.3},"2024":{"V":2786.6,"C":1809.7,"S":430.4,"AR":615.0,"AP":238.3,"INV":248.1,"TA":4443.6,"INT":299.1}}},{"ric":"COMP026.OQ","empresa":"Comparable 26 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.165039,"2023":0.252161,"2024":0.273124}},"fin":{"2022":{"V":1351.8,"C":926.2,"S":202.5,"AR":178.5,"AP":249.6,"INV":136.2,"TA":1455.8,"INT":148.0},"2023":{"V":3482.3,"C":2306.7,"S":297.5,"AR":686.6,"AP":488.4,"INV":512.6,"TA":3349.0,"INT":234.0},"2024":{"V":3002.3,"C":1679.1,"S":503.2,"AR":368.5,"AP":426.1,"INV":380.9,"TA":3873.3,"INT":314.4}}},{"ric":"COMP027.OQ","empresa":"Comparable 27 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.11993,"2023":0.134374,"2024":0.212572}},"fin":{"2022":{"V":2043.7,"C":1500.7,"S":297.9,"AR":394.4,"AP":247.0,"INV":373.9,"TA":3164.9,"INT":438.7},"2023":{"V":1941.6,"C":1391.7,"S":289.0,"AR":548.7,"AP":323.4,"INV":308.4,"TA":2796.2,"INT":242.7},"2024":{"V":1042.0,"C":653.3,"S":167.2,"AR":123.6,"AP":104.1,"INV":121.8,"TA":1208.8,"INT":13.1}}},{"ric":"COMP028.OQ","empresa":"Comparable 28 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.201542,"2023":0.194766,"2024":0.222916}},"fin":{"2022":{"V":2931.4,"C":1933.6,"S":407.0,"AR":824.8,"AP":518.1,"INV":251.3,"TA":4420.4,"INT":347.0},"2023":{"V":1123.4,"C":708.1,"S":196.5,"AR":323.4,"AP":123.7,"INV":86.3,"TA":1761.4,"INT":132.5},"2024":{"V":912.9,"C":610.6,"S":98.8,"AR":92.0,"AP":114.7,"INV":147.3,"TA":1065.3,"INT":34.1}}},{"ric":"COMP029.OQ","empresa":"Comparable 29 Inc","accepted":true,"vals":{"Margen Operativo / Ventas":{"2022":0.193043,"2023":0.115006,"2024":0.205867}},"fin":{"2022":{"V":3602.3,"C":2528.6,"S":378.3,"AR":920.9,"AP":606.8,"INV":400.2,"TA":5057.4,"INT":27.7},"2023":{"V":2039.9,"C":1500.2,"S":305.1,"AR":476.8,"AP":372.3,"INV":304.2,"TA":1734.2,"INT":232.1},"2024":{"V":1489.8,"C":996.6,"S":186.5,"AR":157.6,"AP":243.6,"INV":138.0,"TA":1939.8,"INT":238.8}}}],"tpDefault":{"2022":{"V":2500.0,"C":1700.0,"S":300.0,"AR":600.0,"AP":250.0,"INV":180.0},"2023":{"V":2500.0,"C":1700.0,"S":300.0,"AR":600.0,"AP":250.0,"INV":180.0},"2024":{"V":2500.0,"C":1700.0,"S":300.0,"AR":600.0,"AP":250.0,"INV":180.0}},"tasasDefault":{"2022":0.05,"2023":0.045,"2024":0.06},"mr":[{"Empresa":"Comparable 0 Inc","RIC":"COMP000.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Fabricación y distribución de componentes electrónicos para la industria automotriz."},{"Empresa":"Comparable 1 Inc","RIC":"COMP001.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Comercialización mayorista de productos químicos industriales y especialidades."},{"Empresa":"Comparable 2 Inc","RIC":"COMP002.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Prestación de servicios de logística y transporte de carga a nivel regional."},{"Empresa":"Comparable 3 Inc","RIC":"COMP003.OQ","Aceptada (Si/No)":"No","Descripcion de Negocio":"Producción de envases plásticos y soluciones de packaging para consumo masivo."},{"Empresa":"Comparable 4 Inc","RIC":"COMP004.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Distribución de equipamiento médico y consumibles hospitalarios."},{"Empresa":"Comparable 5 Inc","RIC":"COMP005.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Fabricación y distribución de componentes electrónicos para la industria automotriz."},{"Empresa":"Comparable 6 Inc","RIC":"COMP006.OQ","Aceptada (Si/No)":"No","Descripcion de Negocio":"Comercialización mayorista de productos químicos industriales y especialidades."},{"Empresa":"Comparable 7 Inc","RIC":"COMP007.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Prestación de servicios de logística y transporte de carga a nivel regional."},{"Empresa":"Comparable 8 Inc","RIC":"COMP008.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Producción de envases plásticos y soluciones de packaging para consumo masivo."},{"Empresa":"Comparable 9 Inc","RIC":"COMP009.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Distribución de equipamiento médico y consumibles hospitalarios."},{"Empresa":"Comparable 10 Inc","RIC":"COMP010.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Fabricación y distribución de componentes electrónicos para la industria automotriz."},{"Empresa":"Comparable 11 Inc","RIC":"COMP011.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Comercialización mayorista de productos químicos industriales y especialidades."},{"Empresa":"Comparable 12 Inc","RIC":"COMP012.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Prestación de servicios de logística y transporte de carga a nivel regional."},{"Empresa":"Comparable 13 Inc","RIC":"COMP013.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Producción de envases plásticos y soluciones de packaging para consumo masivo."},{"Empresa":"Comparable 14 Inc","RIC":"COMP014.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Distribución de equipamiento médico y consumibles hospitalarios."},{"Empresa":"Comparable 15 Inc","RIC":"COMP015.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Fabricación y distribución de componentes electrónicos para la industria automotriz."},{"Empresa":"Comparable 16 Inc","RIC":"COMP016.OQ","Aceptada (Si/No)":"No","Descripcion de Negocio":"Comercialización mayorista de productos químicos industriales y especialidades."},{"Empresa":"Comparable 17 Inc","RIC":"COMP017.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Prestación de servicios de logística y transporte de carga a nivel regional."},{"Empresa":"Comparable 18 Inc","RIC":"COMP018.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Producción de envases plásticos y soluciones de packaging para consumo masivo."},{"Empresa":"Comparable 19 Inc","RIC":"COMP019.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Distribución de equipamiento médico y consumibles hospitalarios."},{"Empresa":"Comparable 20 Inc","RIC":"COMP020.OQ","Aceptada (Si/No)":"No","Descripcion de Negocio":"Fabricación y distribución de componentes electrónicos para la industria automotriz."},{"Empresa":"Comparable 21 Inc","RIC":"COMP021.OQ","Aceptada (Si/No)":"No","Descripcion de Negocio":"Comercialización mayorista de productos químicos industriales y especialidades."},{"Empresa":"Comparable 22 Inc","RIC":"COMP022.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Prestación de servicios de logística y transporte de carga a nivel regional."},{"Empresa":"Comparable 23 Inc","RIC":"COMP023.OQ","Aceptada (Si/No)":"No","Descripcion de Negocio":"Producción de envases plásticos y soluciones de packaging para consumo masivo."},{"Empresa":"Comparable 24 Inc","RIC":"COMP024.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Distribución de equipamiento médico y consumibles hospitalarios."},{"Empresa":"Comparable 25 Inc","RIC":"COMP025.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Fabricación y distribución de componentes electrónicos para la industria automotriz."},{"Empresa":"Comparable 26 Inc","RIC":"COMP026.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Comercialización mayorista de productos químicos industriales y especialidades."},{"Empresa":"Comparable 27 Inc","RIC":"COMP027.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Prestación de servicios de logística y transporte de carga a nivel regional."},{"Empresa":"Comparable 28 Inc","RIC":"COMP028.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Producción de envases plásticos y soluciones de packaging para consumo masivo."},{"Empresa":"Comparable 29 Inc","RIC":"COMP029.OQ","Aceptada (Si/No)":"Si","Descripcion de Negocio":"Distribución de equipamiento médico y consumibles hospitalarios."}],"analisis":[{"Empresa":"Comparable 0 Inc","RIC":"COMP000.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 1 Inc","RIC":"COMP001.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 2 Inc","RIC":"COMP002.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 3 Inc","RIC":"COMP003.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 4 Inc","RIC":"COMP004.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 5 Inc","RIC":"COMP005.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 6 Inc","RIC":"COMP006.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 7 Inc","RIC":"COMP007.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 8 Inc","RIC":"COMP008.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 9 Inc","RIC":"COMP009.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 10 Inc","RIC":"COMP010.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 11 Inc","RIC":"COMP011.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 12 Inc","RIC":"COMP012.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 13 Inc","RIC":"COMP013.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 14 Inc","RIC":"COMP014.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 15 Inc","RIC":"COMP015.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 16 Inc","RIC":"COMP016.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 17 Inc","RIC":"COMP017.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 18 Inc","RIC":"COMP018.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 19 Inc","RIC":"COMP019.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 20 Inc","RIC":"COMP020.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 21 Inc","RIC":"COMP021.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 22 Inc","RIC":"COMP022.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 23 Inc","RIC":"COMP023.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 24 Inc","RIC":"COMP024.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 25 Inc","RIC":"COMP025.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 26 Inc","RIC":"COMP026.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 27 Inc","RIC":"COMP027.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 28 Inc","RIC":"COMP028.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Comparable 29 Inc","RIC":"COMP029.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"PASA","Razon de Rechazo":null},{"Empresa":"Rechazada 0 SA","RIC":"REJ000.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 1 SA","RIC":"REJ001.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 2 SA","RIC":"REJ002.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 3 SA","RIC":"REJ003.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 4 SA","RIC":"REJ004.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 5 SA","RIC":"REJ005.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 6 SA","RIC":"REJ006.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 7 SA","RIC":"REJ007.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 8 SA","RIC":"REJ008.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 9 SA","RIC":"REJ009.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 10 SA","RIC":"REJ010.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 11 SA","RIC":"REJ011.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 12 SA","RIC":"REJ012.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 13 SA","RIC":"REJ013.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 14 SA","RIC":"REJ014.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 15 SA","RIC":"REJ015.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 16 SA","RIC":"REJ016.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 17 SA","RIC":"REJ017.OQ","Subsidiaria":"NO PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Subsidiaria de grupo"},{"Empresa":"Rechazada 18 SA","RIC":"REJ018.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 19 SA","RIC":"REJ019.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 20 SA","RIC":"REJ020.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 21 SA","RIC":"REJ021.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 22 SA","RIC":"REJ022.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 23 SA","RIC":"REJ023.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 24 SA","RIC":"REJ024.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 25 SA","RIC":"REJ025.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 26 SA","RIC":"REJ026.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 27 SA","RIC":"REJ027.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 28 SA","RIC":"REJ028.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 29 SA","RIC":"REJ029.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"NO PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Información insuficiente"},{"Empresa":"Rechazada 30 SA","RIC":"REJ030.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 31 SA","RIC":"REJ031.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 32 SA","RIC":"REJ032.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 33 SA","RIC":"REJ033.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 34 SA","RIC":"REJ034.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 35 SA","RIC":"REJ035.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 36 SA","RIC":"REJ036.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 37 SA","RIC":"REJ037.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 38 SA","RIC":"REJ038.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 39 SA","RIC":"REJ039.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 40 SA","RIC":"REJ040.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"NO PASA","Ventas/Activos > 5%":"PASA","Resultado":"NO PASA","Razon de Rechazo":"No - Pérdidas brutas recurrentes"},{"Empresa":"Rechazada 41 SA","RIC":"REJ041.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"},{"Empresa":"Rechazada 42 SA","RIC":"REJ042.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"},{"Empresa":"Rechazada 43 SA","RIC":"REJ043.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"},{"Empresa":"Rechazada 44 SA","RIC":"REJ044.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"},{"Empresa":"Rechazada 45 SA","RIC":"REJ045.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"},{"Empresa":"Rechazada 46 SA","RIC":"REJ046.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"},{"Empresa":"Rechazada 47 SA","RIC":"REJ047.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"},{"Empresa":"Rechazada 48 SA","RIC":"REJ048.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"},{"Empresa":"Rechazada 49 SA","RIC":"REJ049.OQ","Subsidiaria":"PASA","Informacion Insuficiente":"PASA","Resultado Bruto":"PASA","Ventas/Activos > 5%":"NO PASA","Resultado":"NO PASA","Razon de Rechazo":"No - No supera filtro de intensidad"}]};
+
+/* ---------- helpers numéricos ---------- */
+const pct = x => (x*100).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2})+'%';
+function quantileInc(sorted, q){
+  const n = sorted.length;
+  if(!n) return NaN;
+  if(n===1) return sorted[0];
+  const pos=(n-1)*q, base=Math.floor(pos), rest=pos-base;
+  return (base+1<n) ? sorted[base]+rest*(sorted[base+1]-sorted[base]) : sorted[base];
+}
+function parseNum(v){
+  if(v===null||v===undefined||v==='') return NaN;
+  if(typeof v==='number') return v;
+  const s=String(v).replace('%','').trim().replace(/\./g,'').replace(',', '.');
+  const f=parseFloat(s); return isNaN(f)?NaN:f;
+}
+
+/* ---------- estado ---------- */
+let DS=null, PLI=null, NY=3;
+let ADJ={on:false, esServ:false, tp:{}, tasas:{}, via:"costos", alic:0.35};
+
+/* ---------- ajuste de patrimoniales (verificado vs pipeline) ---------- */
+function safeDiv(a,b){ return (!isNaN(a)&&!isNaN(b)&&b!==0)?a/b:NaN; }
+function calcularRatioPli(pli,v,c,s,a,i){
+  const ub=(!isNaN(v)&&!isNaN(c))?v-c:NaN;
+  const uo=(!isNaN(v)&&!isNaN(c)&&!isNaN(s))?v-c-s:NaN;
+  const ao=(!isNaN(a)&&!isNaN(i))?a-i:a;
+  if(pli==="Margen Bruto / Ventas")return safeDiv(ub,v);
+  if(pli==="Margen Bruto / Costos")return safeDiv(ub,c);
+  if(pli==="Margen Neto / Costos Totales"){const ct=(!isNaN(c)&&!isNaN(s))?c+s:NaN;return safeDiv(uo,ct);}
+  if(pli==="Margen Operativo / Ventas")return safeDiv(uo,v);
+  if(pli==="Margen Operativo / Activos")return safeDiv(uo,ao);
+  return NaN;
+}
+const _present=(...xs)=>xs.every(x=>x!==null&&x!==undefined&&!isNaN(x));
+function ajustarComp(fin,years,pli,tp,tasas,esServ){
+  const aj={};
+  for(const y of years){
+    const i=tasas[y]??0; const f=(fin&&fin[y])||{};
+    let vn=f.V,cv=f.C,sga=f.S,cc=f.AR,cp=f.AP,inv=f.INV,ta=f.TA,intg=f.INT;
+    const t=tp[y]||{}; const vnc=t.V,ccc=t.AR,cpc=t.AP,invc=t.INV;
+    let vn_aj=vn;
+    if(_present(ccc,vnc,vn,cc,i)&&vnc!==0){ vn_aj=vn-(((ccc/vnc*vn)-cc)*(i/(1+i))); }
+    let cv_aj=cv;
+    if(_present(cpc,vnc,vn,cp,i)&&vnc!==0){ cv_aj=isNaN(cv)?NaN:cv-(((cpc/vnc*vn)-cp)*(i/(1+i))); }
+    if(!esServ && _present(invc,vnc,vn,inv,i)&&vnc!==0){ cv_aj=(isNaN(cv_aj)?cv:cv_aj)-(((invc/vnc*vn)-inv)*i); }
+    aj[y]=calcularRatioPli(pli,vn_aj,cv_aj,sga,ta,intg);
+  }
+  const vals=years.map(y=>aj[y]).filter(v=>!isNaN(v));
+  return {aj, prom: vals.length? vals.reduce((a,b)=>a+b,0)/vals.length : NaN};
+}
+function ajusteBaseImponible(pli,m,v,c,s,ao,via){
+  if(isNaN(m)||isNaN(v)||isNaN(c))return null; const sv=isNaN(s)?0:s,ub=v-c,uo=v-c-sv; let aj=NaN;
+  if(pli.startsWith("Margen Operativo / Ventas")) aj= via==="costos"? m*v-uo : (Math.abs(1-m)<1e-12?null:(c+sv)/(1-m)-v);
+  else if(pli.startsWith("Margen Neto / Costos Totales")){ if(via==="costos"){if(Math.abs(1+m)<1e-12)return null;aj=c-((v-sv*(1+m))/(1+m));}else aj=(1+m)*(c+sv)-v; }
+  else if(pli.startsWith("Margen Bruto / Ventas")) aj= via==="costos"? m*v-ub : (Math.abs(1-m)<1e-12?null:c/(1-m)-v);
+  else if(pli.startsWith("Margen Bruto / Costos")){ if(via==="costos"){if(Math.abs(1+m)<1e-12)return null;aj=c-(v/(1+m));}else aj=c*(1+m)-v; }
+  else if(pli.startsWith("Margen Operativo / Activos")){ if(isNaN(ao))return null; aj=m*ao-uo; } else return null;
+  return (aj===null||isNaN(aj))?null:aj;
+}
+function rangoDe(proms){ const s=proms.filter(v=>!isNaN(v)).sort((a,b)=>a-b);
+  return {n:s.length,min:quantileInc(s,0),q1:quantileInc(s,.25),med:quantileInc(s,.5),q3:quantileInc(s,.75),max:quantileInc(s,1)}; }
+function computeAdjusted(){
+  const years=DS.plis[PLI].slice(0,NY);
+  const comps=[];
+  DS.rows.filter(r=>r.accepted && r.fin).forEach(r=>{
+    const R=ajustarComp(r.fin,years,PLI,ADJ.tp,ADJ.tasas,ADJ.esServ);
+    if(!isNaN(R.prom)) comps.push({empresa:r.empresa, ric:r.ric, byYear:years.map(y=>R.aj[y]), avg:R.prom});
+  });
+  return {years, comps, ...rangoDe(comps.map(c=>c.avg))};
+}
+// PLI de la tested party (promedio de los años cargados) y su año más reciente
+function tpPLIyBase(){
+  const years=DS.plis[PLI].slice(0,NY);
+  const ratios=[];
+  years.forEach(y=>{ const t=ADJ.tp[y]||{}; const r=calcularRatioPli(PLI,t.V,t.C,t.S,t.TA,t.INT); if(!isNaN(r)) ratios.push(r); });
+  const pli = ratios.length? ratios.reduce((a,b)=>a+b,0)/ratios.length : NaN;
+  const yb = years[0]; const tb=ADJ.tp[yb]||{}; // año más reciente para base imponible
+  return {pli, base:{V:tb.V,C:tb.C,S:tb.S,TA:tb.TA,INT:tb.INT}};
+}
+
+/* ---------- parseo del workbook ---------- */
+function normalizeFromWorkbook(wb){
+  const names=wb.SheetNames;
+  const findSheet=(pred)=>{ for(const nm of names){ const j=XLSX.utils.sheet_to_json(wb.Sheets[nm],{defval:null}); if(j.length&&pred(Object.keys(j[0]),j)) return j; } return null; };
+  // hoja PLI: tiene columnas "Margen ..._YYYY"
+  const pliRe=/^(Margen .+)_(\d{4})$/;
+  const pliRows = (wb.Sheets["PLI + Ratios"] ? XLSX.utils.sheet_to_json(wb.Sheets["PLI + Ratios"],{defval:null}) : null)
+                 || findSheet(keys=>keys.some(k=>pliRe.test(k)));
+  if(!pliRows) throw {t:"No encontré la hoja de indicadores", m:"El archivo no tiene una hoja <b>PLI + Ratios</b> con columnas del tipo <b>Margen …_2024</b>. ¿Es el Excel que devuelve el Modo 1?"};
+  // hoja MR: tiene "Aceptada (Si/No)"
+  const mrRows = (wb.Sheets["MR"] ? XLSX.utils.sheet_to_json(wb.Sheets["MR"],{defval:null}) : null)
+               || findSheet(keys=>keys.includes("Aceptada (Si/No)"));
+  if(!mrRows) throw {t:"Falta la revisión cualitativa", m:"No encontré la hoja <b>MR</b> con la columna <b>Aceptada (Si/No)</b>. Completá esa columna en el Excel y volvé a subirlo."};
+
+  // detectar PLIs y años
+  const plis={};
+  Object.keys(pliRows[0]).forEach(k=>{ const m=pliRe.exec(k); if(m){ (plis[m[1]]=plis[m[1]]||[]).push(m[2]); }});
+  Object.keys(plis).forEach(p=>plis[p]=[...new Set(plis[p])].sort((a,b)=>b-a));
+  if(!Object.keys(plis).length) throw {t:"Sin indicadores para calcular", m:"La hoja de indicadores no tiene columnas por año. Revisá que el Modo 1 haya terminado bien."};
+
+  // aceptadas por RIC
+  const acc=new Set();
+  mrRows.forEach(r=>{ const a=String(r["Aceptada (Si/No)"]??"").trim().toLowerCase(); if(["si","sí","s","yes"].includes(a)) acc.add(String(r["RIC"]??"").trim()); });
+
+  // hoja Data: financieros crudos para el ajuste de patrimoniales (opcional)
+  const F={V:"Revenue from Goods & Services",C:"Cost of Revenues - Total",S:"Selling General & Administrative Expenses - Total",AR:"AccountsReceivable",AP:"AccountsPayable",INV:"Inventories",TA:"Total Assets",INT:"Intangible Assets - Total - Net"};
+  const dataRows = (wb.Sheets["Data"] ? XLSX.utils.sheet_to_json(wb.Sheets["Data"],{defval:null}) : null)
+                 || findSheet(keys=>keys.some(k=>/^Revenue from Goods & Services_\d{4}$/.test(k)));
+  const finByRic={};
+  const allYears=[...new Set(Object.values(plis).flat())];
+  if(dataRows){ dataRows.forEach(r=>{ const ric=String(r["RIC"]??"").trim(); const fin={};
+    allYears.forEach(y=>{ fin[y]={}; for(const k in F){ fin[y][k]=parseNum(r[`${F[k]}_${y}`]); } });
+    finByRic[ric]=fin; }); }
+
+  const rows=pliRows.map(r=>{
+    const ric=String(r["RIC"]??"").trim();
+    const vals={};
+    for(const p in plis){ vals[p]={}; plis[p].forEach(y=>{ vals[p][y]=parseNum(r[`${p}_${y}`]); }); }
+    return {ric, empresa:String(r["Empresa"]??r["Company Common Name"]??ric).trim(), accepted:acc.has(ric), vals, fin:finByRic[ric]||null};
+  });
+  return {plis, rows, hasFin:!!dataRows, mrRows,
+          analisisRows:(wb.Sheets["Analisis"]?XLSX.utils.sheet_to_json(wb.Sheets["Analisis"],{defval:null}):null)};
+}
+function normalizeSample(s){
+  const rows=s.rows.map(r=>{ const vals={}; for(const p in r.vals){ vals[p]={}; for(const y in r.vals[p]){ vals[p][y]=(r.vals[p][y]===null?NaN:r.vals[p][y]); } }
+    let fin=null; if(r.fin){ fin={}; for(const y in r.fin){ fin[y]={}; for(const k in r.fin[y]){ fin[y][k]=(r.fin[y][k]===null?NaN:r.fin[y][k]); } } }
+    return {...r,vals,fin}; });
+  return {plis:s.plis, rows, hasFin:rows.some(r=>r.fin), tpDefault:s.tpDefault||null, tasasDefault:s.tasasDefault||null,
+          mrRows:s.mr||null, analisisRows:s.analisis||null};
+}
+
+/* ---------- cómputo del rango ---------- */
+function compute(){
+  const years=DS.plis[PLI].slice(0,NY);
+  const comps=[];
+  DS.rows.filter(r=>r.accepted).forEach(r=>{
+    const per=years.map(y=>r.vals[PLI]?.[y]).filter(v=>!isNaN(v));
+    if(!per.length) return;
+    const avg=per.reduce((a,b)=>a+b,0)/per.length;
+    comps.push({empresa:r.empresa, ric:r.ric, byYear:years.map(y=>r.vals[PLI]?.[y]), avg});
+  });
+  const sorted=comps.map(c=>c.avg).sort((a,b)=>a-b);
+  return {years, comps,
+    n:sorted.length,
+    min:quantileInc(sorted,0), q1:quantileInc(sorted,.25), med:quantileInc(sorted,.5),
+    q3:quantileInc(sorted,.75), max:quantileInc(sorted,1)};
+}
+
+/* ---------- render ---------- */
+let LAST=null;
+function render(){
+  const R=compute(); LAST=R;
+  const years=R.years;
+  document.getElementById('pliName').textContent=PLI;
+  document.getElementById('pliSub').textContent=`Promedio de ${years.length} ${years.length>1?'años':'año'} · ${[...years].reverse().join(' · ')}`;
+  document.getElementById('nComp').textContent=R.n;
+  document.getElementById('vQ1').textContent=pct(R.q1);
+  document.getElementById('vMed').textContent=pct(R.med);
+  document.getElementById('vQ3').textContent=pct(R.q3);
+  document.getElementById('eMin').textContent=pct(R.min);
+  document.getElementById('eMax').textContent=pct(R.max);
+
+  // barra
+  const span=(R.max-R.min)||1;
+  const pos=v=>((v-R.min)/span)*100;
+  const q1p=pos(R.q1), q3p=pos(R.q3), medp=pos(R.med);
+  const wh=document.getElementById('whisk'); wh.style.left='0%'; wh.style.right='0%';
+  document.getElementById('capMin').style.left='0%';
+  document.getElementById('capMax').style.left='100%';
+  const iqr=document.getElementById('iqr'); iqr.style.left=q1p+'%'; iqr.style.width=(q3p-q1p)+'%';
+  document.getElementById('med').style.left=medp+'%';
+
+  // config
+  document.getElementById('tblYears').textContent=[...years].reverse().join(' · ');
+  renderTable(R);
+  renderYrs();
+  // re-evaluar tested party si había un valor
+  const tv=document.getElementById('tpVal').value; if(tv.trim()) locateTP();
+  syncAdjust();
+}
+
+function renderTable(R){
+  const years=R.years;
+  const thead=document.querySelector('#tbl thead'); const tbody=document.querySelector('#tbl tbody');
+  thead.innerHTML='<tr><th data-k="empresa">Empresa</th>'+
+    [...years].reverse().map(y=>`<th class="num">${y}</th>`).join('')+
+    '<th class="avg num" data-k="avg">Promedio</th></tr>';
+  const rows=[...R.comps].sort((a,b)=>b.avg-a.avg);
+  tbody.innerHTML=rows.map(c=>{
+    const cells=[...c.byYear].reverse().map(v=>`<td class="num">${isNaN(v)?'—':pct(v)}</td>`).join('');
+    return `<tr><td>${c.empresa}</td>${cells}<td class="avg num">${pct(c.avg)}</td></tr>`;
+  }).join('');
+}
+
+function renderYrs(){
+  const max=DS.plis[PLI].length; const box=document.getElementById('yrs'); box.innerHTML='';
+  for(let i=1;i<=max;i++){ const b=document.createElement('button'); b.textContent=i; if(i===NY)b.classList.add('on');
+    b.onclick=()=>{ NY=i; render(); }; box.appendChild(b); }
+}
+
+function locateTP(){
+  if(!LAST) return;
+  const raw=document.getElementById('tpVal').value;
+  const num=parseNum(raw); const v=isNaN(num)?NaN:num/100;
+  const verdict=document.getElementById('verdict'); const vt=document.getElementById('verdictTxt');
+  const needle=document.getElementById('needle');
+  if(isNaN(v)){ verdict.className='verdict'; needle.className='bar-needle'; return; }
+  const R=LAST; let cls, txt, sub='';
+  const gapMed=R.med-v;
+  const gapTxt=Math.abs(gapMed)<1e-9?'': ` · ${gapMed>0?'faltan':'sobran'} ${pct(Math.abs(gapMed))} a la mediana`;
+  if(v<R.q1){ cls='out'; txt=(v<R.min?'Por debajo del mínimo':'Por debajo del rango'); sub=`faltan ${pct(R.q1-v)} para Q1`; }
+  else if(v>R.q3){ cls='in'; txt='Por encima del rango'; sub='sin riesgo de ajuste por esta vía'; }
+  else { cls='in'; txt='Dentro del rango intercuartil'; sub=gapTxt.replace(' · ',''); }
+  verdict.className='verdict show '+cls;
+  vt.innerHTML=txt+(sub?` <small>${sub}</small>`:'');
+  // aguja
+  const span=(R.max-R.min)||1; let p=((v-R.min)/span)*100; p=Math.max(-3,Math.min(103,p));
+  needle.style.left=p+'%'; needle.dataset.label=pct(v); needle.className='bar-needle show '+cls;
+}
+
+/* ---------- exportar ---------- */
+/* ---------- UI del ajuste de patrimoniales ---------- */
+const TP_COLS=[["V","Ventas"],["C","Costo"],["S","Gastos op."],["AR","Ctas. a cobrar"],["AP","Ctas. a pagar"],["INV","Inventarios"],["i","Tasa %"]];
+function renderTpGrid(){
+  const years=DS.plis[PLI].slice(0,NY);
+  const thead=document.querySelector('#tpGrid thead');
+  const tbody=document.querySelector('#tpGrid tbody');
+  thead.innerHTML='<tr><th>Año</th>'+TP_COLS.map(c=>`<th>${c[1]}</th>`).join('')+'</tr>';
+  tbody.innerHTML=years.map(y=>{
+    const t=ADJ.tp[y]||{}; const iv=(ADJ.tasas[y]!=null)?(ADJ.tasas[y]*100):'';
+    const cells=TP_COLS.map(c=>{
+      if(c[0]==='i') return `<td><input data-y="${y}" data-k="i" inputmode="decimal" value="${iv===''?'':String(iv).replace('.',',')}"></td>`;
+      const v=t[c[0]]; return `<td><input data-y="${y}" data-k="${c[0]}" inputmode="decimal" value="${v==null||isNaN(v)?'':String(v).replace('.',',')}"></td>`;
+    }).join('');
+    return `<tr><td>${y}</td>${cells}</tr>`;
+  }).join('');
+  tbody.querySelectorAll('input').forEach(inp=>inp.addEventListener('input',readTpGrid));
+}
+function readTpGrid(){
+  ADJ.tp={}; ADJ.tasas={};
+  document.querySelectorAll('#tpGrid tbody input').forEach(inp=>{
+    const y=+inp.dataset.y, k=inp.dataset.k, val=parseNum(inp.value);
+    if(k==='i'){ if(!isNaN(val)) ADJ.tasas[y]=val/100; }
+    else { ADJ.tp[y]=ADJ.tp[y]||{}; if(!isNaN(val)) ADJ.tp[y][k]=val; }
+  });
+}
+function syncAdjust(){
+  // se llama en cada render (cambio de PLI/años): reconstruye grilla y recalcula si estaba activo
+  const hasFin=DS.hasFin;
+  document.getElementById('adjNoData').hidden=hasFin;
+  document.getElementById('adjInputs').style.display=hasFin?'':'none';
+  if(!ADJ.on){ return; }
+  if(hasFin){ renderTpGrid(); runAdjust(); }
+}
+function drawAdjBar(R, tpVal){
+  const span=(R.max-R.min)||1, pos=v=>((v-R.min)/span)*100;
+  document.getElementById('whiskA').style.left='0%'; document.getElementById('whiskA').style.right='0%';
+  document.getElementById('capMinA').style.left='0%'; document.getElementById('capMaxA').style.left='100%';
+  const iqr=document.getElementById('iqrA'); iqr.style.left=pos(R.q1)+'%'; iqr.style.width=(pos(R.q3)-pos(R.q1))+'%';
+  document.getElementById('medA').style.left=pos(R.med)+'%';
+  document.getElementById('eMinA').textContent=pct(R.min); document.getElementById('eMaxA').textContent=pct(R.max);
+  const ndl=document.getElementById('needleA');
+  if(isNaN(tpVal)){ ndl.className='bar-needle'; }
+  else { let p=Math.max(-3,Math.min(103,pos(tpVal))); ndl.style.left=p+'%'; ndl.dataset.label=pct(tpVal);
+    ndl.className='bar-needle show '+(tpVal>=R.q1?'in':''); }
+}
+function runAdjust(){
+  readTpGrid();
+  const Runadj=compute(); const R=computeAdjusted();
+  if(!R.n){ document.getElementById('adjResult').hidden=true; return; }
+  document.getElementById('adjResult').hidden=false;
+  document.getElementById('uQ1').textContent=pct(Runadj.q1); document.getElementById('uMed').textContent=pct(Runadj.med); document.getElementById('uQ3').textContent=pct(Runadj.q3);
+  document.getElementById('aQ1').textContent=pct(R.q1); document.getElementById('aMed').textContent=pct(R.med); document.getElementById('aQ3').textContent=pct(R.q3);
+  const {pli:tpPli, base}=tpPLIyBase();
+  drawAdjBar(R, tpPli);
+  // veredicto sobre el rango ajustado (vinculante)
+  const vA=document.getElementById('verdictA'), vtA=document.getElementById('verdictTxtA');
+  if(isNaN(tpPli)){ vA.className='verdict'; }
+  else{
+    let cls,txt,sub='';
+    if(tpPli<R.q1){ cls='out'; txt=(tpPli<R.min?'Por debajo del mínimo':'Por debajo del rango ajustado'); sub=`la tested party rinde ${pct(tpPli)}`; }
+    else if(tpPli>R.q3){ cls='in'; txt='Por encima del rango ajustado'; sub=`rinde ${pct(tpPli)}`; }
+    else { cls='in'; txt='Dentro del rango ajustado'; sub=`rinde ${pct(tpPli)}`; }
+    vA.className='verdict show '+cls; vtA.innerHTML=txt+(sub?` <small>${sub}</small>`:'');
+  }
+  // base imponible si cae por debajo
+  const bi=document.getElementById('biBox');
+  if(!isNaN(tpPli) && tpPli<R.q1 && base && !isNaN(base.V) && !isNaN(base.C)){
+    bi.hidden=false; renderBI(R.med, base);
+  } else { bi.hidden=true; }
+  ADJ._lastR=R; ADJ._lastUn=Runadj; ADJ._base=base; ADJ._tpPli=tpPli;
+}
+function renderBI(mediana, base){
+  const ao=(!isNaN(base.TA)&&!isNaN(base.INT))?base.TA-base.INT:NaN;
+  const aj=ajusteBaseImponible(PLI, mediana, base.V, base.C, base.S, ao, ADJ.via);
+  const el=(id,v)=>document.getElementById(id).textContent=v;
+  if(aj==null){ el('biAjuste','—'); el('biImp','—'); return; }
+  const money=x=>x.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  el('biAjuste', money(aj)); el('biImp', money(aj*ADJ.alic));
+}
+
+function download(){
+  if(!LAST) return; const R=LAST;
+  const wb=XLSX.utils.book_new();
+  const rango=[["Indicador (PLI)",PLI],["Comparables (n)",R.n],["Años",[...R.years].reverse().join(", ")],[],
+    ["Estadístico","Valor"],["Mínimo",R.min],["Cuartil inferior (Q1)",R.q1],["Mediana",R.med],["Cuartil superior (Q3)",R.q3],["Máximo",R.max]];
+  const ws1=XLSX.utils.aoa_to_sheet(rango);
+  XLSX.utils.book_append_sheet(wb,ws1,"Rango");
+  const head=["Empresa","RIC",...[...R.years].reverse(),"Promedio"];
+  const body=[...R.comps].sort((a,b)=>b.avg-a.avg).map(c=>[c.empresa,c.ric,...[...c.byYear].reverse(),c.avg]);
+  const ws2=XLSX.utils.aoa_to_sheet([head,...body]);
+  XLSX.utils.book_append_sheet(wb,ws2,"Comparables");
+
+  // Hojas del ajuste de patrimoniales, si está activo y calculado
+  if(ADJ.on && ADJ._lastR){
+    const A=ADJ._lastR;
+    const rangoAj=[["Indicador (PLI)",PLI],["Comparables (n)",A.n],["Años",[...A.years].reverse().join(", ")],[],
+      ["Estadístico","Sin ajuste","Ajustado"],
+      ["Mínimo",ADJ._lastUn.min,A.min],["Cuartil inferior (Q1)",ADJ._lastUn.q1,A.q1],
+      ["Mediana",ADJ._lastUn.med,A.med],["Cuartil superior (Q3)",ADJ._lastUn.q3,A.q3],["Máximo",ADJ._lastUn.max,A.max]];
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rangoAj),"Rango ajustado");
+    const headA=["Empresa","RIC",...[...A.years].reverse(),"Promedio ajustado"];
+    const bodyA=[...A.comps].sort((a,b)=>b.avg-a.avg).map(c=>[c.empresa,c.ric,...[...c.byYear].reverse(),c.avg]);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([headA,...bodyA]),"Comparables ajustados");
+    if(!document.getElementById('biBox').hidden && ADJ._base){
+      const ao=(!isNaN(ADJ._base.TA)&&!isNaN(ADJ._base.INT))?ADJ._base.TA-ADJ._base.INT:NaN;
+      const aj=ajusteBaseImponible(PLI,A.med,ADJ._base.V,ADJ._base.C,ADJ._base.S,ao,ADJ.via);
+      const bi=[["Ajuste de base imponible"],[],["Vía",ADJ.via],["Mediana ajustada",A.med],
+        ["Indicador tested party",ADJ._tpPli],["Ajuste a la base imponible",aj],
+        ["Alícuota Ganancias",ADJ.alic],["Impuesto resultante",aj==null?null:aj*ADJ.alic]];
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(bi),"Base imponible");
+    }
+  }
+  XLSX.writeFile(wb,"rango_modo2.xlsx");
+}
+
+/* ---------- flujo de carga ---------- */
+function showError(e){
+  const box=document.getElementById('err');
+  box.innerHTML=`<b>${e.t||'No pude leer el archivo'}.</b> ${e.m||'Revisá que sea el Excel de la corrida y volvé a intentar.'}`;
+  box.classList.add('show');
+}
+function clearError(){ document.getElementById('err').classList.remove('show'); }
+
+function loadDataset(ds){
+  DS=ds; PLI=Object.keys(ds.plis)[0]; NY=Math.min(3, ds.plis[PLI].length);
+  // init ajuste
+  ADJ={on:false, esServ:false, tp:{}, tasas:{}, via:"costos", alic:0.35};
+  if(ds.tpDefault){ for(const y in ds.tpDefault){ ADJ.tp[+y]={...ds.tpDefault[y]}; } }
+  if(ds.tasasDefault){ for(const y in ds.tasasDefault){ ADJ.tasas[+y]=ds.tasasDefault[y]; } }
+  document.getElementById('adjOn').checked=false; document.getElementById('adjBody').hidden=true;
+  document.getElementById('esServ').checked=false;
+  document.getElementById('adjResult').hidden=true;
+  const sel=document.getElementById('pliSel'); sel.innerHTML=Object.keys(ds.plis).map(p=>`<option>${p}</option>`).join('');
+  sel.value=PLI;
+  document.getElementById('lede').style.display='none';
+  document.getElementById('drop').style.display='none';
+  document.getElementById('result').classList.add('show');
+  document.getElementById('newFile').style.display='inline-block';
+  render();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function reset(){
+  DS=null; document.getElementById('result').classList.remove('show');
+  document.getElementById('lede').style.display='';
+  document.getElementById('drop').style.display='';
+  document.getElementById('newFile').style.display='none';
+  document.getElementById('file').value='';
+  document.getElementById('tpVal').value='';
+  document.getElementById('verdict').className='verdict';
+  clearError();
+}
+function handleFile(f){
+  clearError();
+  if(!f) return;
+  if(!/\.xlsx?$/.test(f.name)){ showError({t:'Ese archivo no es un Excel', m:'Necesito un <b>.xlsx</b>, el que devuelve el Modo 1.'}); return; }
+  const rd=new FileReader();
+  rd.onload=e=>{ try{ const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'}); loadDataset(normalizeFromWorkbook(wb)); }
+                 catch(err){ showError(err.t?err:{t:'No pude procesar el archivo', m:'¿Está dañado o protegido? Probá reexportarlo desde Excel.'}); } };
+  rd.onerror=()=>showError({t:'No se pudo leer el archivo'});
+  rd.readAsArrayBuffer(f);
+}
+
+/* ---------- eventos ---------- */
+const drop=document.getElementById('drop');
+document.getElementById('pick').onclick=()=>document.getElementById('file').click();
+document.getElementById('file').onchange=e=>handleFile(e.target.files[0]);
+document.getElementById('sample').onclick=()=>{ clearError(); loadDataset(normalizeSample(SAMPLE)); };
+document.getElementById('pliSel').onchange=e=>{ PLI=e.target.value; NY=Math.min(NY,DS.plis[PLI].length); render(); };
+document.getElementById('tpGo').onclick=locateTP;
+document.getElementById('tpVal').addEventListener('keydown',e=>{ if(e.key==='Enter')locateTP(); });
+/* ---------- generación de Word (docx-js, en el navegador) ---------- */
+function _accRics(){ return DS.rows.filter(r=>r.accepted).map(r=>r.ric); }
+function _dataByRic(){ const years=DS.plis[PLI]; const o={};
+  DS.rows.forEach(r=>{ if(!r.fin) return; const e={nombre:r.empresa};
+    years.forEach(y=>{ e[y]=r.fin[y]||{}; }); o[r.ric]=e; }); return o; }
+function _pliByRic(){ const o={}; DS.rows.forEach(r=>{ o[r.ric]={}; o[r.ric][PLI]=r.vals[PLI]||{}; }); return o; }
+function _tpObj(){ const o={}; for(const y in ADJ.tp){ o[y]={...ADJ.tp[y]}; } return o; }
+
+function renderEmbudoPNG(stages){
+  const NAVY="#1F4E79", MED="#2E75B6", GREEN="#548235", ACCENT="#C55A11";
+  const n=stages.length, maxv=Math.max(1,...stages.map(s=>s[1]));
+  const W=900, rowH=64, gap=24, top=20, bottom=20;
+  const H=top+bottom+n*(rowH+gap)-gap;
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  const ctx=cv.getContext('2d'); ctx.fillStyle="#fff"; ctx.fillRect(0,0,W,H);
+  const plotL=W*0.30, plotW=W*0.55; ctx.textBaseline="middle";
+  stages.forEach((s,i)=>{ const [et,v]=s; const y=top+i*(rowH+gap)+rowH/2;
+    const bw=(v/maxv)*plotW, left=plotL+(plotW-bw)/2;
+    const col=(i===0?NAVY:(i===n-1?GREEN:MED));
+    ctx.fillStyle=col; ctx.fillRect(left,y-rowH/2,bw,rowH);
+    ctx.strokeStyle="#fff"; ctx.lineWidth=1.5; ctx.strokeRect(left,y-rowH/2,bw,rowH);
+    const label=v.toLocaleString('es-AR');
+    if(bw<plotW*0.10){ ctx.fillStyle=col; ctx.font="bold 15px Inter,sans-serif"; ctx.textAlign="left"; ctx.fillText(label,left+bw+8,y); }
+    else { ctx.fillStyle="#fff"; ctx.font="bold 15px Inter,sans-serif"; ctx.textAlign="center"; ctx.fillText(label,plotL+plotW/2,y); }
+    ctx.fillStyle="#333"; ctx.font="14px Inter,sans-serif"; ctx.textAlign="right"; ctx.fillText(et,plotL-14,y);
+    if(i>0){ const caida=stages[i-1][1]-v; if(caida!==0){ ctx.fillStyle=ACCENT; ctx.font="bold 13px Inter,sans-serif"; ctx.textAlign="left";
+      ctx.fillText("−"+caida.toLocaleString('es-AR'),plotL+plotW+16,y); } }
+  });
+  const b64=cv.toDataURL('image/png').split(',')[1], bin=atob(b64), u8=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i); return u8;
+}
+async function _dl(blob, filename){ const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  a.remove(); setTimeout(()=>URL.revokeObjectURL(url),4000); }
+function _buildDoc(kind){
+  const NY3=DS.plis[PLI].slice(0,NY);
+  if(kind==='tested'){ const tpPli=(ADJ.on?tpPLIyBase().pli:NaN);
+    const nombre=document.getElementById('tpName').value.trim()||"Parte analizada";
+    return WordGen.testedParty(_tpObj(),{nombre,pliNombre:PLI,pliValor:tpPli,esServicios:ADJ.esServ,hacerAjuste:ADJ.on,years:NY3}); }
+  if(kind==='fin') return WordGen.estadosFinancieros(_dataByRic(),_pliByRic(),_accRics(),NY3,{pliNombre:PLI});
+  if(kind==='listado') return WordGen.listado(DS.mrRows||[]);
+  if(kind==='desc') return WordGen.descripcion(DS.mrRows||[]);
+  if(kind==='rech'){ const stages=WordGen.construirEmbudo(DS.analisisRows||[],DS.mrRows||[]);
+    const png=(stages.length>=2)?renderEmbudoPNG(stages):null;
+    return WordGen.rechazos(DS.analisisRows||[],DS.mrRows||[],png); }
+}
+const _FN={tested:"financiero_parte_analizada.docx",fin:"estados_financieros_comparables.docx",
+  listado:"listado_aceptadas.docx",desc:"descripcion_aceptadas.docx",rech:"razones_rechazo.docx"};
+async function generarWord(kind, btn){
+  const note=document.getElementById('wordNote');
+  try{
+    if(typeof WordGen==='undefined'||typeof docx==='undefined') throw new Error("no cargó la librería de Word (revisá tu conexión).");
+    if(btn) btn.disabled=true;
+    if(kind==='all'){ for(const k of ['tested','fin','listado','desc','rech']){ const blob=await WordGen.toBlob(_buildDoc(k)); await _dl(blob,_FN[k]); await new Promise(r=>setTimeout(r,350)); }
+      note.className='wnote'; note.textContent="Listo: se descargaron los cinco informes."; note.hidden=false; }
+    else { const blob=await WordGen.toBlob(_buildDoc(kind)); await _dl(blob,_FN[kind]);
+      note.className='wnote'; note.textContent="Informe generado: "+_FN[kind]; note.hidden=false; }
+  }catch(e){ note.className='wnote err'; note.textContent="No se pudo generar: "+e.message; note.hidden=false; }
+  finally{ if(btn) btn.disabled=false; }
+}
+
+document.getElementById('dl').onclick=download;
+document.querySelectorAll('.wbtn').forEach(b=> b.addEventListener('click', ()=>generarWord(b.dataset.doc, b)));
+document.getElementById('reset').onclick=reset;
+document.getElementById('newFile').onclick=reset;
+// ---- ajuste de patrimoniales ----
+document.getElementById('adjOn').addEventListener('change',e=>{
+  ADJ.on=e.target.checked; document.getElementById('adjBody').hidden=!ADJ.on;
+  if(ADJ.on) syncAdjust();
+});
+document.getElementById('esServ').addEventListener('change',e=>{ ADJ.esServ=e.target.checked; if(ADJ.on) runAdjust(); });
+document.getElementById('adjGo').onclick=()=>runAdjust();
+document.getElementById('viaSeg').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-via]'); if(!b) return;
+  ADJ.via=b.dataset.via;
+  document.querySelectorAll('#viaSeg button').forEach(x=>x.classList.toggle('on',x===b));
+  if(ADJ._lastR && !document.getElementById('biBox').hidden) renderBI(ADJ._lastR.med, ADJ._base);
+});
+document.getElementById('alic').addEventListener('change',e=>{ ADJ.alic=parseFloat(e.target.value);
+  if(ADJ._lastR && !document.getElementById('biBox').hidden) renderBI(ADJ._lastR.med, ADJ._base); });
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('drag');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag');}));
+drop.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; handleFile(f); });
+</script>
+</body>
+</html>
