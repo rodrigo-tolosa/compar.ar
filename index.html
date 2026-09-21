@@ -568,6 +568,8 @@
   .tblnote{ font-size:11.5px; color:var(--ink-soft); margin:8px 0 0 }
   .ghost-btn{ background:var(--paper) !important; color:var(--ink) !important; border:1px solid var(--line-strong) !important }
   .ghost-btn:hover{ border-color:var(--in) !important }
+  .chk-sm{ font-size:12.5px; color:var(--ink-soft); margin:2px 0 }
+  .chk-sm input{ width:15px; height:15px; accent-color:var(--in) }
 
   footer{max-width:1080px; margin:0 auto; padding:0 clamp(18px,5vw,56px) 40px; color:var(--ink-soft); font-size:12.5px}  footer span{color:var(--in)}
 </style>
@@ -725,6 +727,7 @@
           <div><label for="pliSel">Indicador (PLI)</label><select id="pliSel"></select></div>
           <div><label>Años del promedio</label><div class="yrs" id="yrs"></div></div>
           <button class="btn" id="dl">Descargar Excel</button>
+          <label class="chk chk-sm"><input type="checkbox" id="chartMinMax" checked> Incluir mínimo y máximo en el gráfico</label>
           <button class="btn ghost-btn" id="dlPng">Descargar gráfico (PNG)</button>
           <button class="reset" id="reset">Cargar otro archivo</button>
         </div>
@@ -1078,53 +1081,75 @@ function renderBI(mediana, base){
   el('biAjuste', money(aj)); el('biImp', money(aj*ADJ.alic));
 }
 
-function drawBoxPlotPNG(R, tpPli, opts){
-  const W=1120, H=470, scale=2;
+function drawBarChartPNG(R, tpPli, opts){
+  const withMM=opts.minmax, testedName=opts.testedName||"Empresa analizada";
+  const bars=[];
+  if(withMM) bars.push({label:"Mínimo", val:R.min, t:false});
+  bars.push({label:"Primer Cuartil", val:R.q1, t:false});
+  bars.push({label:"Mediana", val:R.med, t:false});
+  bars.push({label:"Tercer Cuartil", val:R.q3, t:false});
+  if(withMM) bars.push({label:"Máximo", val:R.max, t:false});
+  if(!isNaN(tpPli)) bars.push({label:testedName, val:tpPli, t:true});
+  bars.sort((a,b)=>a.val-b.val);
+
+  const W=980, H=600, scale=2;
   const cv=document.createElement('canvas'); cv.width=W*scale; cv.height=H*scale;
   const ctx=cv.getContext('2d'); ctx.scale(scale,scale);
   ctx.fillStyle="#ffffff"; ctx.fillRect(0,0,W,H);
-  const ink="#1A1D1A", soft="#6b7280", green="#0E7C5A", greenF="rgba(14,124,90,0.12)", clay="#B45309";
+  const ink="#1A1D1A", soft="#6b7280", blue="#4472C4", green="#2E9E5B", grid="#e5e7eb";
   const pctS=v=>(v*100).toFixed(2).replace('.',',')+'%';
-  ctx.textBaseline="alphabetic"; ctx.textAlign="left";
-  ctx.fillStyle=ink; ctx.font="bold 27px Inter,Arial,sans-serif"; ctx.fillText(opts.title,48,58);
-  ctx.fillStyle=soft; ctx.font="15px Inter,Arial,sans-serif"; ctx.fillText(opts.sub,48,84);
-  const padL=90, padR=W-90, midY=255;
-  const lo=Math.min(R.min, isNaN(tpPli)?R.min:tpPli), hi=Math.max(R.max, isNaN(tpPli)?R.max:tpPli);
-  const span=(hi-lo)||1, pad=span*0.08;
-  const x=v=>padL+((v-(lo-pad))/((hi+pad)-(lo-pad)))*(padR-padL);
-  ctx.strokeStyle=ink; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(x(R.min),midY); ctx.lineTo(x(R.max),midY); ctx.stroke();
-  [R.min,R.max].forEach(v=>{ ctx.beginPath(); ctx.moveTo(x(v),midY-15); ctx.lineTo(x(v),midY+15); ctx.stroke(); });
-  const boxT=midY-48, boxB=midY+48, x1=x(R.q1), x3=x(R.q3);
-  ctx.fillStyle=greenF; ctx.fillRect(x1,boxT,x3-x1,boxB-boxT);
-  ctx.strokeStyle=green; ctx.lineWidth=2.5; ctx.strokeRect(x1,boxT,x3-x1,boxB-boxT);
-  ctx.beginPath(); ctx.moveTo(x(R.med),boxT); ctx.lineTo(x(R.med),boxB); ctx.stroke();
-  ctx.textBaseline="bottom"; ctx.font="bold 14px Inter,Arial,sans-serif";
-  ctx.fillStyle=ink; ctx.textAlign="center"; ctx.fillText("Q1  "+pctS(R.q1), x1, boxT-10);
-  ctx.fillStyle=green; ctx.fillText("Mediana  "+pctS(R.med), x(R.med), boxT-30);
-  ctx.fillStyle=ink; ctx.fillText("Q3  "+pctS(R.q3), x3, boxT-10);
-  ctx.textBaseline="top"; ctx.fillStyle=soft; ctx.font="13px Inter,Arial,sans-serif";
-  ctx.fillText("mínimo "+pctS(R.min), x(R.min), boxB+14);
-  ctx.fillText("máximo "+pctS(R.max), x(R.max), boxB+14);
-  if(!isNaN(tpPli)){
-    const inside=(tpPli>=R.q1 && tpPli<=R.q3), col=inside?green:clay, xn=x(tpPli);
-    ctx.strokeStyle=col; ctx.lineWidth=2.5; ctx.setLineDash([5,4]);
-    ctx.beginPath(); ctx.moveTo(xn,boxT-52); ctx.lineTo(xn,boxB+40); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle=col; ctx.textAlign="center"; ctx.textBaseline="bottom"; ctx.font="bold 15px Inter,Arial,sans-serif";
-    ctx.fillText("Empresa analizada  "+pctS(tpPli), xn, boxT-56);
-  }
-  ctx.textAlign="left"; ctx.textBaseline="alphabetic"; ctx.fillStyle=soft; ctx.font="13px Inter,Arial,sans-serif";
-  ctx.fillText(opts.foot||"compar.ar", 48, H-28);
+  const pctAxis=v=>(v*100).toFixed(1).replace('.',',')+'%';
+
+  ctx.textAlign="left"; ctx.textBaseline="alphabetic";
+  ctx.fillStyle=ink; ctx.font="bold 24px Inter,Arial,sans-serif"; ctx.fillText(opts.title,60,44);
+  ctx.fillStyle=soft; ctx.font="14px Inter,Arial,sans-serif"; ctx.fillText(opts.sub,60,68);
+
+  const padL=76, padR=W-40, plotTop=95, plotBottom=500;
+  const plotH=plotBottom-plotTop, plotW=padR-padL;
+  const vals=bars.map(b=>b.val);
+  let yMax=Math.max(...vals,0), yMin=Math.min(...vals,0);
+  const sp=(yMax-yMin)||Math.abs(yMax)||1; yMax+=sp*0.16; if(yMin<0) yMin-=sp*0.06;
+  const y=v=> plotBottom-((v-yMin)/(yMax-yMin))*plotH;
+  const baseY=y(0);
+
+  ctx.textAlign="right"; ctx.textBaseline="middle"; ctx.font="12px Inter,Arial,sans-serif";
+  const ticks=5;
+  for(let i=0;i<=ticks;i++){ const val=yMin+(yMax-yMin)*i/ticks; const yy=y(val);
+    ctx.strokeStyle=grid; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(padL,yy); ctx.lineTo(padR,yy); ctx.stroke();
+    ctx.fillStyle=soft; ctx.fillText(pctAxis(val), padL-10, yy); }
+  ctx.strokeStyle="#c9ccd1"; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(padL,baseY); ctx.lineTo(padR,baseY); ctx.stroke();
+
+  const n=bars.length, slot=plotW/n, bw=Math.min(96, slot*0.52);
+  bars.forEach((b,i)=>{ const cx=padL+slot*(i+0.5), col=b.t?green:blue;
+    const yv=y(b.val), top=Math.min(yv,baseY), h=Math.abs(yv-baseY);
+    ctx.fillStyle=col; ctx.fillRect(cx-bw/2, top, bw, h);
+    const label=pctS(b.val); ctx.textAlign="center";
+    if(h>34){ ctx.fillStyle="#fff"; ctx.font="bold 13px Inter,Arial,sans-serif";
+      if(b.val>=0){ ctx.textBaseline="bottom"; ctx.fillText(label, cx, baseY-10); }
+      else { ctx.textBaseline="top"; ctx.fillText(label, cx, baseY+8); }
+    } else { ctx.fillStyle=col; ctx.font="bold 13px Inter,Arial,sans-serif";
+      ctx.textBaseline="bottom"; ctx.fillText(label, cx, top-6); }
+    ctx.fillStyle=ink; ctx.textBaseline="top"; ctx.font="13px Inter,Arial,sans-serif";
+    const words=b.label.split(' ');
+    if(words.length>1 && b.label.length>11){ ctx.fillText(words.slice(0,-1).join(' '), cx, plotBottom+16); ctx.fillText(words.slice(-1)[0], cx, plotBottom+34); }
+    else ctx.fillText(b.label, cx, plotBottom+16);
+  });
+
+  ctx.textAlign="left"; ctx.textBaseline="alphabetic"; ctx.fillStyle=soft; ctx.font="12px Inter,Arial,sans-serif";
+  ctx.fillText(opts.foot||"compar.ar", 60, H-20);
   return cv;
 }
 function downloadChartPNG(){
   const note=document.getElementById('wordNote');
   try{
     const showAdj=ADJ._on && ADJ._lastAdj;
-    const R = showAdj ? ADJ._lastAdj : LAST;
+    const R=showAdj?ADJ._lastAdj:LAST;
     if(!R || !R.n) throw new Error("todavía no hay un rango para graficar.");
     const tpPli=(ADJ._tpPli!=null)?ADJ._tpPli:NaN;
-    const sub=`${R.n} comparables · ${[...R.years].reverse().join(' · ')}${showAdj?' · rango ajustado':''}`;
-    const cv=drawBoxPlotPNG(R, tpPli, {title:PLI, sub, foot:"compar.ar · rango de tus comparables"});
+    const minmax=document.getElementById('chartMinMax').checked;
+    const nm=(document.getElementById('tpName').value||'').trim();
+    const sub=`${R.n} comparables · ${[...R.years].reverse().join(' · ')} · ${showAdj?'rango ajustado':'sin ajustar'}`;
+    const cv=drawBarChartPNG(R, tpPli, {title:PLI, sub, minmax, testedName:nm||"Empresa analizada", foot:"compar.ar · rango de tus comparables"});
     cv.toBlob(b=>{ const url=URL.createObjectURL(b); const a=document.createElement('a');
       a.href=url; a.download="grafico_rango.png"; document.body.appendChild(a); a.click(); a.remove();
       setTimeout(()=>URL.revokeObjectURL(url),4000); }, 'image/png');
